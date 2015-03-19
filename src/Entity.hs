@@ -44,17 +44,19 @@ inside_ :: (Member (State (IM.IntMap UniqueId)) r)
         => Eff r UniqueId -> UniqueId -> Eff r ()
 inside_ = (.#)
 
-named :: (Member (State (IM.IntMap k)) r, Member (State (M.Map k UniqueId)) r, Typeable k, Ord k) => Eff r UniqueId -> k -> Eff r ()
+named :: (Member (State (M.Map k UniqueId)) r, Typeable k, Ord k)
+      => Eff r UniqueId -> k -> Eff r UniqueId
 named f n = do
     eid <- f
-    modify $ IM.insert (unId eid) n
     modify $ M.insert n eid
-    return ()
+    return eid
+
+named_ :: (Member (State (M.Map k UniqueId)) r, Typeable k, Ord k) => Eff r UniqueId -> k -> Eff r ()
+named_ f n = named f n >> return ()
+
 
 getEntityBy :: (Member (State (M.Map k a)) r, Typeable a, Typeable k, Ord k) => k -> Eff r (Maybe a)
-getEntityBy name = do
-    m <- get
-    return $ M.lookup name m
+getEntityBy name = fmap (M.lookup name) get
 
 --------------------------------------------------------------------------------
 -- Intersections
