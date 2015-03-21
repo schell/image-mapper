@@ -73,7 +73,7 @@ setInputCallbacks ref win = do
     setScrollCallback win $ Just $ \_ x y ->
         input ref $ ScrollEvent x y
 
-    setDropCallback win $ Just $ \_ _ fs -> do
+    setDropCallback win $ Just $ \_ fs -> do
         putStrLn $ "Got files:\n" ++ unlines fs
         input ref $ FileDropEvent fs
 
@@ -131,17 +131,18 @@ app ref = do
     enableBlending
 
     entity ## Transform (V2 0 60) (V2 1 1) 0
-           ## (Color $ V4 1 0 0 1)
+           ## (SolidColor $ V4 1 0 0 1)
            .# DisplayText' ubuntuMono{_descriptorStyle = FontStyle True False} 128 "{}/~Test test test"
 
     button <- entity ## Transform (V2 100 100) (V2 1 1) 0
-                     ## (Color $ V4 0.5 0.5 0.5 1)
+                     -- ## SolidColor (V4 1 0 0 1)
                      ## DisplayPoly [V2 0 0, V2 100 0, V2 100 40, V2 0 40]
+                     ## (TextureColor (LocalImage "/Users/schell/Desktop/IMG_0066.PNG") [V2 1 1, V2 1 0, V2 0 0, V2 0 1])
                      `named` "button"
 
     entity `inside` button
            ## Transform (V2 10 32) (V2 1 1) 0
-           ## (Color $ V4 1 1 1 1)
+           ## (SolidColor $ V4 1 1 1 1)
            ## DisplayText ubuntuMono 32 "Start"
            .# button
 
@@ -157,8 +158,8 @@ app ref = do
             drawClear
             ts <- transforms
             ds <- get
-            cs <- (fmap unColor) <$> get
-            sequence_ $ intersectionWithKey3 drawThing cs ds ts
+            cs <- get
+            sequence_ $ intersectionWithKey3 draw cs ds ts
 
 doEvent :: (Mutates ParentEntities r,
             Mutates Transforms r,
