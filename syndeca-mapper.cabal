@@ -61,13 +61,21 @@ executable syndeca-mapper
   -- other-extensions:
 
   -- Other library packages from which modules are imported.
-  build-depends:       base >=4.7 && <4.8,
+  build-depends:       base >=4.7,
                        gelatin-core,
                        FontyFruity,
                        linear,
                        containers,
-                       extensible-effects,
-                       stm
+                       stm,
+                       async,
+                       --reactive-banana,
+                       --reflex == 0.1.0,
+                       yarn,
+                       dependent-sum,
+                       gl,
+                       mtl,
+                       transformers,
+                       ekg
 
   -- Directories containing source files.
   hs-source-dirs:      src

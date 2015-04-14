@@ -1,39 +1,43 @@
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
+import Example
 import Prelude hiding (sequence_)
-import Render
+import Gelatin.Core.Render
 import Entity
-import Linear
-import Graphics.Text.TrueType
+import Graphics.GL.Core33
+import Reflex
+import Reflex.Host.Class
+import Control.Monad
+import Control.Monad.Fix (MonadFix)
+import Control.Monad.IO.Class
+import Data.Dependent.Sum (DSum ((:=>)))
 import Control.Applicative
 import Control.Monad hiding (sequence_)
-import Control.Eff
-import Control.Eff.Lift
-import Control.Eff.Fresh
-import Control.Eff.State.Strict
+import Control.Monad.IO.Class (liftIO)
+import Control.Concurrent
+import Control.Concurrent.Async
+import Control.Monad.Reader
+import Data.Bits
+import Data.Typeable
 import Data.IORef
 import Data.Monoid
 import Data.Maybe
 import Data.Foldable (sequence_)
 import Data.IntMap (IntMap)
 import Data.Map (Map)
+import System.Exit
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
 
-type Colors = IntMap Color
-type Transforms = IntMap Transform
-type ParentEntities = IntMap UniqueId
-type Displays = IntMap Display
-type Names = Map String UniqueId
-type Mutates a = Member (State a)
-type MakesIds = Member (Fresh UniqueId)
-type DoesIO = SetMember Lift (Lift IO)
+
+newtype Rendering = Rendering { unRendering :: Renderer } deriving (Typeable)
+--type Renderings = IntMap Rendering
+--type Transforms = IntMap Transform
+--type ParentEntities = IntMap UniqueId
+--type Names = Map String UniqueId
 data InputEvent = NoInputEvent
                 | CharEvent Char
                 | WindowSizeEvent Int Int
@@ -46,134 +50,200 @@ data InputEvent = NoInputEvent
                 | FileDropEvent [String]
                 deriving (Show, Eq, Ord)
 
--- | Inject some input into a WindowRef.
-input :: IORef [InputEvent] -> InputEvent -> IO ()
-input ref e = modifyIORef ref (++ [e])
+data Scene = Scene [Rendering] [Transform]
 
-setInputCallbacks :: IORef [InputEvent] -> Window -> IO ()
-setInputCallbacks ref win = do
-    setCharCallback win $ Just $ \_ c ->
-        input ref $ CharEvent c
+type CursorApp t m = (Reflex t, MonadHold t m, MonadFix m)
+                   => Event t InputEvent
+                   -> m (Behavior t Scene)
 
-    setWindowSizeCallback win $ Just $ \_ w' h' -> do
-        input ref $ WindowSizeEvent w' h'
+host :: Window
+     -> (forall t m. CursorApp t m)
+     -> IO ()
+host w myGuest = runSpiderHost $ do
 
-    setKeyCallback win $ Just $ \_ k i ks modi ->
-        input ref $ KeyEvent k i ks modi
+    (e, eTriggerRef) <- newEventWithTriggerRef
+    eHandle <- subscribeEvent e
 
-    setMouseButtonCallback win $ Just $ \_ mb mbs modi ->
-        input ref $ MouseButtonEvent mb mbs modi
+    cbRef <- liftIO $ newIORef []
 
-    setCursorPosCallback win $ Just $ \_ x y ->
-        input ref $ CursorMoveEvent x y
+    let input i = modifyIORef cbRef (++ [i])
 
-    setCursorEnterCallback win $ Just $ \_ cs ->
-        input ref $ CursorEnterEvent cs
+    liftIO $ do
+        setCharCallback w $ Just $ \_ c -> input $
+            CharEvent c
 
-    setScrollCallback win $ Just $ \_ x y ->
-        input ref $ ScrollEvent x y
+        setWindowSizeCallback w $ Just $ \_ w' h' -> input $
+            WindowSizeEvent w' h'
 
-    setDropCallback win $ Just $ \_ fs -> do
-        putStrLn $ "Got files:\n" ++ unlines fs
-        input ref $ FileDropEvent fs
+        setKeyCallback w $ Just $ \_ k i ks modi -> input $
+            KeyEvent k i ks modi
 
+        setMouseButtonCallback w $ Just $ \_ mb mbs modi -> input $
+            MouseButtonEvent mb mbs modi
 
-transforms :: (Mutates Transforms r,
-               Mutates ParentEntities r,
-               Mutates Displays r)
-           => Eff r Transforms
-transforms = do
-    ts <- get
-    parents <- get
-    let displayMap = fmap findParents parents
-        findParents p = allParents parents p ++ [p]
-        parentTfrms = fmap (foldr mappend mempty . catMaybes . fmap findTfrms) displayMap
-        findTfrms = flip IM.lookup ts . unId
-    return $ IM.unionWith mappend ts parentTfrms
+        setCursorPosCallback w $ Just $ \_ x y -> input $
+            CursorMoveEvent x y
 
--- | Lists a branch of all parents, root first.
-allParents :: ParentEntities -> UniqueId -> [UniqueId]
-allParents parents uid =
-    -- Precaution so we don't recurse if a parent contains itself
-    takeWhile (/= uid) allParents'
-    where allParents' = case IM.lookup (unId uid) parents of
-                            Nothing -> []
-                            Just uid' -> allParents parents uid' ++ [uid']
+        setCursorEnterCallback w $ Just $ \_ cs -> input $
+            CursorEnterEvent cs
+
+        setScrollCallback w $ Just $ \_ x y -> input $
+            ScrollEvent x y
+
+        setDropCallback w $ Just $ \_ fs -> do
+            putStrLn $ "Got files:\n" ++ unlines fs
+            input $ FileDropEvent fs
+
+    b <- runHostFrame $ myGuest e
+    forever $ do
+        mETrigger <- liftIO $ readIORef eTriggerRef
+        case mETrigger of
+            Nothing -> return ()
+            Just t  -> do
+                events <- liftIO $ readIORef cbRef
+                let events' = map (t :=>) events
+                fireEventsAndRead events' $ void $ readEvent eHandle
+                liftIO $ writeIORef cbRef []
+        scene <- runHostFrame $ sample b
+        liftIO $ renderScene w scene
+
+mouseFollow :: Rendering -> CursorApp t m
+mouseFollow r e = do
+    let rs = constDyn [r]
+        takeCursor t (CursorMoveEvent x y) = translate (realToFrac x) (realToFrac y) t
+        takeCursor t _ = t
+
+    t <- foldDyn takeCursor mempty
+
+    return $ Scene <$> rs <*> [t]
+
+--transforms :: (Mutates Transforms r,
+--               Mutates ParentEntities r)
+--           => Eff r Transforms
+--transforms = do
+--    ts <- get
+--    parents <- get
+--    let displayMap = fmap findParents parents
+--        findParents p = allParents parents p ++ [p]
+--        parentTfrms = fmap (foldr mappend mempty . catMaybes . fmap findTfrms) displayMap
+--        findTfrms = flip IM.lookup ts . unId
+--    return $ IM.unionWith mappend ts parentTfrms
+--
+---- | Lists a branch of all parents, root first.
+--allParents :: ParentEntities -> UniqueId -> [UniqueId]
+--allParents parents uid =
+--    -- Precaution so we don't recurse if a parent contains itself
+--    takeWhile (/= uid) allParents'
+--    where allParents' = case IM.lookup (unId uid) parents of
+--                            Nothing -> []
+--                            Just uid' -> allParents parents uid' ++ [uid']
 
 main :: IO ()
 main = do
     putStrLn "aoeusnth"
-    rsrcs <- initResources 800 600 "Syndeca Mapper"
-    let win = rsrcWindow rsrcs
+    win <- initWindow 800 600 "Syndeca Mapper"
 
-    ref   <- newIORef []
-    setInputCallbacks ref win
+    grs <- loadGeomRenderSource
+    brs <- loadBezRenderSource
 
-    runLift $ evalState (IM.empty :: Transforms)
-            $ evalState (IM.empty :: ParentEntities)
-            $ evalState (IM.empty :: Displays)
-            $ evalState (IM.empty :: Colors)
-            $ evalState (M.empty :: Names)
-            $ evalState rsrcs
-            $ flip runFresh (UniqueId 0)
-            $ app ref
+    --- Load an image texture
+    Right img  <- readImage "/Users/schell/Desktop/KDC_desktop.jpg"
+    let w = fromIntegral $ dynamicMap imageWidth img
+        h = fromIntegral $ dynamicMap imageHeight img
+        texTfrm = translate 110 110 mempty
+    tex <- loadTexture img
+    texR <- textureRenderer win grs tex GL_TRIANGLES
+                            [V2 0 0, V2 w 0, V2 w h
+                            ,V2 0 0, V2 0 h, V2 w h]
+                            [V2 0 0, V2 1 0, V2 1 1
+                            ,V2 0 0, V2 0 1, V2 1 1]
 
-app :: (Mutates ParentEntities r,
-        Mutates Transforms r,
-        Mutates Colors r,
-        Mutates Displays r,
-        Mutates Resources r,
-        Mutates Names r,
-        MakesIds r,
-        DoesIO r)
-    => IORef [InputEvent] -> Eff r ()
-app ref = do
-    enableBlending
+    -- Load some lines
+    let lineTfrm = translate 10 10 mempty
+    lineR <- colorRenderer win grs GL_LINES
+                           [V2 0 0, V2 100 0, V2 100 0, V2 0 100, V2 0 100, V2 0 0]
+                           (cycle [V4 1 1 0 1, V4 1 0 1 1])
 
-    entity ## Transform (V2 0 60) (V2 1 1) 0
-           ## (SolidColor $ V4 1 0 0 1)
-           .# DisplayText' ubuntuMono{_descriptorStyle = FontStyle True False} 128 "{}/~Test test test"
+    -- Load some beziers
+    let bezTfrm = translate 110 10 mempty
+    bezR <- colorBezRenderer win brs
+                             [Bezier GT (V2 0 0) (V2 100 0) (V2 100 100)]
+                             [Triangle (V4 1 1 0 1) (V4 1 0 1 1) (V4 1 1 0 1)]
 
-    button <- entity ## Transform (V2 100 100) (V2 1 1) 0
-                     -- ## SolidColor (V4 1 0 0 1)
-                     ## DisplayPoly [V2 0 0, V2 100 0, V2 100 40, V2 0 40]
-                     ## (TextureColor (LocalImage "/Users/schell/Desktop/IMG_0066.PNG") [V2 1 1, V2 1 0, V2 0 0, V2 0 1])
-                     `named` "button"
+    -- Load a font renderer
+    dpi <- calculateDpi
+    afc <- compileFontCache
+    void $ wait afc
+    let textTfrm = translate 0 (110 + 32) mempty
+    Just (textR, tex2R) <- withFont afc (FontDescriptor "Arial" $ FontStyle False False) $ \font -> do
+        textR <- colorFontRenderer win grs brs dpi
+                                   (FontString font 32 "aoeusnth")
+                                   (\(V2 x _) ->
+                                       lerp (x/100) (V4 1 1 0 1) (V4 1 0 1 1))
 
-    entity `inside` button
-           ## Transform (V2 10 32) (V2 1 1) 0
-           ## (SolidColor $ V4 1 1 1 1)
-           ## DisplayText ubuntuMono 32 "Start"
-           .# button
+        tex2 <- toTexture (100, 100) $ do (rRender lineR) lineTfrm
+                                          (rRender bezR) bezTfrm
+                                          (rRender textR) textTfrm
 
-    forever $ do
-        -- Get and process our events this frame.
-        events <- lift $ do events <- readIORef ref
-                            writeIORef ref []
-                            return events
-        forM_ events doEvent
+        texDrawing2 <- textureRenderer win grs tex2 GL_TRIANGLES
+                                       [V2 0 0, V2 w 0, V2 w h
+                                       ,V2 0 0, V2 0 h, V2 w h]
+                                       [V2 0 0, V2 1 0, V2 1 1
+                                       ,V2 0 0, V2 0 1, V2 1 1]
+        return (textR, texDrawing2)
 
-        -- Render!
-        withNewFrame $ do
-            drawClear
-            ts <- transforms
-            ds <- get
-            cs <- get
-            sequence_ $ intersectionWithKey3 draw cs ds ts
+    let tfrms = [texTfrm, lineTfrm, bezTfrm, textTfrm, translate 100 100 mempty]
+        rndrs = [texR, lineR, bezR, textR, tex2R]
 
-doEvent :: (Mutates ParentEntities r,
-            Mutates Transforms r,
-            Mutates Colors r,
-            Mutates Displays r,
-            Mutates Resources r,
-            Mutates Names r,
-            MakesIds r,
-            DoesIO r)
-        => InputEvent -> Eff r ()
-doEvent (CursorMoveEvent x y) = do
-    mbutton <- getEntityBy "button"
-    case mbutton of
-        Nothing -> return ()
-        Just b  -> modify $ IM.adjust (\(Transform _ s r) ->
-                          Transform (realToFrac <$> V2 x y) s r) (unId b)
-doEvent _ = return ()
+    --runLift $ evalState (IM.empty :: Transforms)
+    --        $ evalState (IM.empty :: ParentEntities)
+    --        $ evalState (IM.empty :: Renderings)
+    --        $ evalState (M.empty :: Names)
+    --        $ flip runFresh (UniqueId 0)
+    --        $ do
+    glEnable GL_BLEND
+    glBlendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA
+
+    --    entity ## Rendering texR
+    --           .# texTfrm
+
+    --    entity ## Rendering lineR
+    --           .# lineTfrm
+
+    --    entity ## Rendering bezR
+    --           .# bezTfrm
+
+    --    entity ## Rendering textR
+    --           .# textTfrm
+
+    --    entity ## Rendering tex2R
+    --           .# translate 100 100 mempty
+
+
+    --runSpiderHost
+
+    host undefined
+
+renderScene win (Scene rndrs tfrms) = do
+    (fbw,fbh) <- getFramebufferSize win
+    glViewport 0 0 (fromIntegral fbw) (fromIntegral fbh)
+    glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT
+
+    --rs <- (fmap unRendering) <$> get
+    --ts <- transforms
+    --lift $ sequence_ $ IM.intersectionWith rRender rs ts
+    zipWithM_ rRender rndrs tfrms
+
+    pollEvents
+    swapBuffers win
+    shouldClose <- windowShouldClose win
+    if shouldClose
+    then exitSuccess
+    else threadDelay 100
+
+--doEvent (CursorMoveEvent x y) = do
+--    mbutton <- getEntityBy ("button" :: String)
+--    case mbutton of
+--        Nothing -> return ()
+--        Just b  -> modify $ IM.adjust (\(Transform _ s r) ->
+--                          Transform (realToFrac <$> V2 x y) s r) (unId b)
