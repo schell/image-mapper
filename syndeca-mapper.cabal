@@ -50,7 +50,7 @@ cabal-version:       >=1.10
 
 
 executable syndeca-mapper
-  ghc-options:        -threaded
+  ghc-options:         -threaded -Wall
   -- .hs or .lhs file containing the Main module.
   main-is:             Main.hs
 
@@ -68,14 +68,16 @@ executable syndeca-mapper
                        containers,
                        stm,
                        async,
+                       time,
+                       extensible-effects,
                        --reactive-banana,
                        --reflex == 0.1.0,
-                       yarn,
-                       dependent-sum,
+                       varying,
                        gl,
                        mtl,
                        transformers,
-                       ekg
+                       ekg,
+                       gdiff >= 1.1 && < 1.2
 
   -- Directories containing source files.
   hs-source-dirs:      src
