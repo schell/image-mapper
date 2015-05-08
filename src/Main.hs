@@ -10,39 +10,35 @@
 module Main where
 
 import Network
+import UI
 import Scene
 import Prelude hiding (sequence_)
 import System.Remote.Monitoring
 import Gelatin.Core.Render
---import Entity
-import Control.Concurrent.Async
 import Graphics.GL.Core33
 import Control.Varying
 import Control.Monad
-import Control.Applicative
-import Control.Concurrent
-import Control.Concurrent.Async
 import Control.Eff
 import Control.Eff.Lift
 import Control.Eff.Fresh
 import Control.Eff.Reader.Strict
 import Control.Eff.State.Strict
-import Control.Arrow
-import Data.Bits
-import Data.Typeable
 import Data.IORef
-import Data.Monoid
---import Data.Maybe
---import Data.Foldable (sequence_)
-import Data.IntMap (IntMap)
---import Data.Map (Map)
-import Data.Time.Clock
-import System.Exit
-import qualified Data.IntMap as IM
---import qualified Data.Map as M
 
-
-newtype Rendering = Rendering { unRendering :: Renderer } deriving (Typeable)
+--------------------------------------------------------------------------------
+-- Stuff I might need later
+--------------------------------------------------------------------------------
+    --- Load an image texture
+    --Right img  <- readImage "/Users/schell/Desktop/KDC_desktop.jpg"
+    --let w = fromIntegral $ dynamicMap imageWidth img
+    --    h = fromIntegral $ dynamicMap imageHeight img
+    --    texTfrm = translate 110 110 mempty
+    --tex <- loadTexture img
+    --texR <- textureRenderer win grs tex GL_TRIANGLES
+    --                        [V2 0 0, V2 w 0, V2 w h
+    --                        ,V2 0 0, V2 0 h, V2 w h]
+    --                        [V2 0 0, V2 1 0, V2 1 1
+    --                        ,V2 0 0, V2 0 1, V2 1 1]
 --type Renderings = IntMap Rendering
 --type Transforms = IntMap Transform
 --type ParentEntities = IntMap UniqueId
@@ -69,6 +65,9 @@ newtype Rendering = Rendering { unRendering :: Renderer } deriving (Typeable)
 --    where allParents' = case IM.lookup (unId uid) parents of
 --                            Nothing -> []
 --                            Just uid' -> allParents parents uid' ++ [uid']
+--------------------------------------------------------------------------------
+--
+--------------------------------------------------------------------------------
 
 main :: IO ()
 main = do
@@ -79,17 +78,6 @@ main = do
     grs <- loadGeomRenderSource
     brs <- loadBezRenderSource
 
-    --- Load an image texture
-    --Right img  <- readImage "/Users/schell/Desktop/KDC_desktop.jpg"
-    --let w = fromIntegral $ dynamicMap imageWidth img
-    --    h = fromIntegral $ dynamicMap imageHeight img
-    --    texTfrm = translate 110 110 mempty
-    --tex <- loadTexture img
-    --texR <- textureRenderer win grs tex GL_TRIANGLES
-    --                        [V2 0 0, V2 w 0, V2 w h
-    --                        ,V2 0 0, V2 0 h, V2 w h]
-    --                        [V2 0 0, V2 1 0, V2 1 1
-    --                        ,V2 0 0, V2 0 1, V2 1 1]
 
     glEnable GL_BLEND
     glBlendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA
@@ -123,27 +111,40 @@ main = do
         input $ FileDropEvent fs
 
     afc <- compileFontCache
-    let rez = Rez grs brs win afc
+    let rez   = Rez grs brs win afc
 
     runLift $ flip runReader rez
-            $ flip runFresh (Uid 0)
-            -- $ evalState (IM.empty :: IntMap
-            $ step ref network
+            $ flip runFresh (Uid 1)
+            $ evalState ([] :: [UIElement])
+            $ evalState (mempty :: Scene)
+            $ step ref uinetwork
 
 step :: (Member (Reader Rez) r,
-        Member (Fresh Uid) r,
-        SetMember Lift (Lift IO) r)
-     => IORef [InputEvent] -> Var (Eff r) InputEvent Scene -> Eff r ()
+         Member (Fresh Uid) r,
+         Member (State [UIElement]) r,
+         Member (State Scene) r,
+         SetMember Lift (Lift IO) r)
+     => IORef [InputEvent] -> Var (Eff r) InputEvent [UIElement] -> Eff r ()
 step ref net = do
     win <- rezWindow <$> ask
     es <- lift $ readIORef ref
     lift $ writeIORef ref []
-    (scene, net') <- stepMany NoInputEvent es net
-    lift $ stepScene win scene
+
+    (els', net') <- stepMany es net
+    els   <- get
+    scene <- get
+
+    let edit  = diffElements els els'
+    scene' <- lift $ editScene edit scene
+    --put root'
+    --put scene'
+
+    lift $ stepScene win scene'
     step ref net'
 
-stepMany :: Monad m => a -> [a] -> Var m a b -> m (b, Var m a b)
-stepMany a []  y = runVar y a
-stepMany a' (a:as) y = execVar y a >>= stepMany a' as
+stepMany :: Monad m => [InputEvent] -> Var m InputEvent b -> m (b, Var m InputEvent b)
+stepMany (e:[]) y = runVar y e
+stepMany (e:es) y = execVar y e >>= stepMany es
+stepMany []     y = runVar y NoInputEvent
 
 
