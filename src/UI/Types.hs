@@ -1,6 +1,6 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module UI.Types where
 
 import Gelatin.Core.Render
@@ -16,35 +16,35 @@ makeLensesFor [("aabbCenter", "aabbCenter_")
               ,("aabbHalfSize", "aabbHalfSize_")
               ] ''AABB
 
-data UI = UI { uiUid       :: Uid
-             , uiPosition  :: V2 Float
-             , uiSize      :: V2 Float
-             , uiScale     :: V2 Float
-             , uiRotation  :: Float
-             } deriving (Show, Eq, Typeable)
+data UITransform = UITransform { uiPosition  :: V2 Float
+                               , uiSize      :: V2 Float
+                               , uiScale     :: V2 Float
+                               , uiRotation  :: Float
+                               } deriving (Show, Eq, Typeable)
 makeLensesFor [("uiUid", "uiUid_")
               , ("uiPosition", "uiPosition_")
               , ("uiSize",   "uiSize_")
               , ("uiScale",  "uiScale_")
               , ("uiRotation", "uiRotation_")
-              ] ''UI
+              ] ''UITransform
 
-data UIElement = UIContainer { uiContainer         :: UI
-                             , uiContainerElements :: [UIElement]
-                             }
-               | UILabel { uiLabel                :: UI
-                         , uiLabelString          :: String
+instance Monoid UITransform where
+    mempty = UITransform 0 0 1 0
+    mappend (UITransform p sz sc r) (UITransform p' sz' sc' r') =
+        UITransform (p + p') (max sz sz') (sc * sc') (r + r')
+
+data UIElement = UILabel { uiLabelString          :: String
                          , uiLabelTextColor       :: V4 Float
                          , uiLabelBackgroundColor :: V4 Float
                          }
                deriving (Show, Eq, Typeable)
 
-mkUi :: Uid -> UI
-mkUi uid = UI uid zero zero (V2 1 1) 0
+data UITree a = UILeaf Uid UITransform a
+              | UIBranch Uid UITransform [UITree a]
+              deriving (Show)
 
-getUi :: UIElement -> UI
-getUi (UIContainer u _) = u
-getUi (UILabel u _ _ _) = u
+type UserInterface = UITree UIElement
+type Scene = UITree Renderer
 
 --getTransform :: UIElement -> Transform
 --getUid :: UIElement -> Uid
