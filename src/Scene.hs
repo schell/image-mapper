@@ -1,16 +1,17 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE RecordWildCards #-}
 module Scene where
 
 import Prelude hiding (sequence_)
 import UI
-import Control.Lens hiding (transform)
-import Data.Generic.Diff
-import Gelatin.Core.Render hiding (Transform, el)
+import Gelatin.Core.Render hiding (el, trace)
 import Control.Concurrent.Async
 import Graphics.GL.Core33
 import Control.Concurrent
@@ -18,9 +19,17 @@ import Control.Eff
 import Control.Eff.Lift
 import Control.Eff.Reader.Strict
 import Control.Eff.State.Strict
+import Control.Eff.Fresh
 import Data.Bits
 import Data.Typeable
+import Data.Monoid
+import Data.Text (pack)
 import System.Exit
+import Data.IntMap (IntMap)
+import qualified Data.IntMap as IM
+
+--newtype DetachedRenderers = Detached { detached :: IntMap (UIElement, Renderer) }
+newtype AttachedRenderers = Attached { attached :: IntMap (UIElement, Renderer) }
 
 data Rez = Rez { rezGeom      :: GeomRenderSource
                , rezBez       :: BezRenderSource
@@ -28,184 +37,90 @@ data Rez = Rez { rezGeom      :: GeomRenderSource
                , rezFontCache :: Async FontCache
                } deriving (Typeable)
 
-type MakesScene r = (Member (Reader Rez) r, SetMember Lift (Lift IO) r)
+type MakesScene r = ( Member (Reader Rez) r
+                    , Member (Fresh Uid) r
+                    , Member (State AttachedRenderers) r
+                    , SetMember Lift (Lift IO) r
+                    )
 
-data UIStack = UIStack { _stackIns  :: [Uid]
-                       , _stackDels :: [Uid]
-                       , _stackCpys :: [Uid]
-                       , _stackPrvs :: [Uid] -- ^ Parents
-                       , _stackCur  :: Uid
-                       , _stackCurCanParent :: Bool
-                       } deriving (Typeable, Show)
-makeLenses ''UIStack
+stepScene :: MakesScene r => [UITree UIElement] -> Eff r ()
+stepScene els = do
+    win <- rezWindow <$> ask
+    lift $ do
+        (fbw,fbh) <- getFramebufferSize win
+        glViewport 0 0 (fromIntegral fbw) (fromIntegral fbh)
+        glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT
 
-data Update = Create Uid UIElement
-            | Destroy Uid
-            | Rerender Uid UIElement
-            | Transform Uid UITransform
-            deriving (Show)
+    mapM_ renderUI els
 
-type EffDiff r = (SetMember Lift (Lift IO) r,
-                  Member (State UIStack) r,
-                  Member (State [Update]) r)
+    lift $ do
+        pollEvents
+        swapBuffers win
+        shouldClose <- windowShouldClose win
+        if shouldClose
+        then exitSuccess
+        else threadDelay 100
 
-data EffPatchResult = EffPatchResult
+treeTransform :: UITree a -> Transform
+treeTransform (UIBranch _ t _) = t
+treeTransform (UILeaf _ t _) = t
 
-space :: Int -> String
-space i = concat $ replicate i "  "
+attach :: (Member (State AttachedRenderers) r, SetMember Lift (Lift IO) r)
+       => Uid -> (UIElement, Renderer) -> Eff r ()
+attach i a' = do
+    mAR <- lookupAttached i
+    case mAR of
+        Nothing -> return ()
+        Just ar -> lift $ rCleanup $ snd ar
+    modify $ \(Attached rs) -> Attached $ IM.insert (unUid i) a' rs
 
-spacePrint :: (SetMember Lift (Lift IO) r, Member (State [Int]) r) => String -> Eff r ()
-spacePrint s = do
-    (is :: [Int]) <- get
-    lift $ putStrLn $ space (sum is) ++ s
+lookupAttached :: (Member (State AttachedRenderers) r)
+               => Uid -> Eff r (Maybe (UIElement, Renderer))
+lookupAttached (Uid i) = (IM.lookup i . attached) <$> get
 
-editScene :: UserInterface -> UserInterface -> IO [Update]
-editScene t t' = do
-    putStrLn "\n"
-    let edit = diff t t'
-    runLift $ evalState (UIStack [] [] [] [] 0 False)
-            $ evalState ([] :: [Update])
-            $ performEdits edit
+newRenderer :: MakesScene r => Uid -> UIElement -> Eff r Renderer
+newRenderer i el = do
+    r <- uiRenderer el
+    attach i (el, r)
+    return r
 
-setCurrent :: EffDiff r => Uid -> Eff r ()
-setCurrent u = do
-    modify $ stackCur .~ u
-    lift $ putStrLn $ " set current " ++ show u
-    printCurrent
+renderUI :: MakesScene r => UITree UIElement -> Eff r ()
+renderUI = renderTree mempty
 
-pushParent :: EffDiff r => Eff r ()
-pushParent = do
-    u <- current
-    lift $ putStrLn $ "   push parent " ++ show u
-    modify $ stackPrvs %~ (u:)
+renderTree :: MakesScene r => Transform -> UITree UIElement -> Eff r ()
+renderTree t (UIBranch _ t' ts) = mapM_ (renderTree $ t <> t') ts
+renderTree t (UILeaf i t' el') = do
+    mAR <- lookupAttached i
+    r <- case mAR of
+        Nothing -> newRenderer i el'
+        Just (el, r) -> if el' == el
+                        then return r
+                        else newRenderer i el'
+    lift $ (rRender r) $ t <> t'
 
-popParent :: EffDiff r => Eff r (Maybe Uid)
-popParent = do
-    ps <- _stackPrvs <$> get
-    case ps of
-        p:ps' -> do modify $ stackPrvs .~ ps'
-                    setCurrent p
-                    lift $ putStrLn $ "   pop parent " ++ show p
-                    return $ Just p
-        _     -> return Nothing
+uiRenderer :: MakesScene r => UIElement -> Eff r Renderer
+uiRenderer (UIBox (AABB (V2 x y) (V2 hw hh)) c) = do
+    lift $ putStrLn "Compiling a box renderer."
+    Rez geom _ w _ <- ask
+    let [tl, tr, br, bl] = [V2 (x-hw) (y-hh), V2 (x+hw) (y-hh), V2 (x+hw) (y+hh), V2 (x-hw) (y+hh)]
+        vs = [tl, tr, br, tl, br, bl]
+        cs = replicate 6 c
+    lift $ colorRenderer w geom GL_TRIANGLES vs cs
 
-del :: EffDiff r => Uid -> Eff r ()
-del = modify . (stackDels %~) . (:)
+uiRenderer (UILabel fn str ps _ bc) = do
+    lift $ putStrLn "Compiling a label renderer."
+    Rez geom _ w afc <- ask
+    dpi <- lift $ calculateDpi
+    let desc = FontDescriptor (pack fn) $ FontStyle False False
+    lift $ withAsyncRenderer afc $ \fc -> do
+        mRend <- withFont fc desc $ \font -> do
+            let BoundingBox{..} = stringBoundingBox font dpi ps str
+                [tl, tr, br, bl] = [V2 _xMin _yMin, V2 _xMax _yMin, V2 _xMax _yMax, V2 _xMin _yMax]
+                vs = [tl, tr, br, tl, br, bl]
+                cs = replicate 6 bc
+            background <- colorRenderer w geom GL_TRIANGLES vs cs
+            return background
+        case mRend of
+            Nothing -> return mempty
+            Just r  -> return r
 
-ins :: EffDiff r => Uid -> Eff r ()
-ins = modify . (stackIns %~) . (:)
-
-cpy :: EffDiff r => Uid -> Eff r ()
-cpy = modify . (stackCpys %~) . (:)
-
-current :: EffDiff r => Eff r Uid
-current = _stackCur <$> get
-
-parent :: EffDiff r => Eff r (Maybe Uid)
-parent = do
-    ps <- _stackPrvs <$> get
-    return $ case ps of
-        p:_ -> Just p
-        _   -> Nothing
-
-printCurrent :: EffDiff r => Eff r ()
-printCurrent = do
-    mp <- parent
-    c  <- current
-    let extra = case mp of
-                    Just p -> " (Parent is " ++ show p ++ ")"
-                    _      -> ""
-    lift $ putStrLn $ "Current is " ++ show c ++ extra
-
-isElement :: UIFamily x y -> UIFamily x y -> Bool
-isElement (UILabel' _) (UILabel' _) = True
-isElement _ _ = False
-
-isTfrm :: UIFamily x y -> UIFamily x y -> Bool
-isTfrm (UITfrm' _) (UITfrm' _) = True
-isTfrm _ _ = False
-
-rerender :: EffDiff r => UIElement -> Eff r ()
-rerender el = do
-    u <- current
-    modify $ (++ [Rerender u el])
-
-transform :: EffDiff r => UITransform -> Eff r ()
-transform t = do
-    u <- current
-    modify $ (++ [Transform u t])
-
-performEdits :: EffDiff r => EditScriptL UIFamily x y -> Eff r [Update]
-performEdits (Cpy c (Cpy (Uid' u) es)) = do
-    lift $ putStrLn $ "Copy " ++ string c ++ " (" ++ show u ++ ")"
-    setCurrent u
-    cpy u
-    performEdits es
-performEdits (Cpy c (Ins (Uid' u) es)) = do
-    lift $ putStrLn $ "Insert " ++ string c ++ " (" ++ show u ++ ")"
-    setCurrent u
-    ins u
-    performEdits es
-performEdits (Cpy c (Del (Uid' u) es)) = do
-    lift $ putStrLn $ "Insert " ++ string c ++ " (" ++ show u ++ ")"
-    setCurrent u
-    del u
-    performEdits es
-performEdits (Cpy UICons' es) = do
-    lift $ putStrLn $ "Copy " ++ string UICons'
-    pushParent
-    performEdits es
-performEdits (Cpy UINil' es) = do
-    lift $ putStrLn $ "Copy " ++ string UINil'
-    _ <- popParent
-    performEdits es
-performEdits (Cpy c es) = do
-    lift $ putStrLn $ "Copy " ++ string c
-    performEdits es
-
-performEdits (Ins (UILabel' u) (Del (UILabel' _) es)) = do
-    lift $ putStrLn $ "Rerender label"
-    rerender u
-    performEdits es
-performEdits (Ins (UITfrm' t) (Del (UITfrm' _) es)) = do
-    lift $ putStrLn $ "Transform"
-    transform t
-    performEdits es
-performEdits (Ins c es) = do
-    lift $ putStrLn $ "Insert " ++ string c
-    performEdits es
-
-performEdits (Del c es) = do
-    lift $ putStrLn $ "Delete " ++ string c
-    performEdits es
-
-performEdits (CpyTree es) = do
-    --spacePrint "CopyTree"
-    lift $ putStrLn $ "CopyTree"
-    performEdits es
-
-performEdits End = do
-    (stack :: UIStack) <- get
-    lift $ print stack
-    get >>= return
-
-stepScene :: Window -> Scene -> IO ()
-stepScene win scene = do
-    (fbw,fbh) <- getFramebufferSize win
-    glViewport 0 0 (fromIntegral fbw) (fromIntegral fbh)
-    glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT
-
-    renderScene scene
-
-    pollEvents
-    swapBuffers win
-    shouldClose <- windowShouldClose win
-    if shouldClose
-    then exitSuccess
-    else threadDelay 100
-
-renderScene :: Scene -> IO ()
-renderScene _ = undefined --sequence_ $ IM.intersectionWith rRender rs ts
-
-mkSceneFromUI :: UIElement -> IO Scene
-mkSceneFromUI = undefined

@@ -24,6 +24,7 @@ import Control.Eff.Fresh
 import Control.Eff.Reader.Strict
 import Control.Eff.State.Strict
 import Data.IORef
+import Data.Time.Clock
 
 --------------------------------------------------------------------------------
 -- Stuff I might need later
@@ -111,35 +112,31 @@ main = do
         input $ FileDropEvent fs
 
     afc <- compileFontCache
+    t   <- getCurrentTime
     let rez   = Rez grs brs win afc
 
     runLift $ flip runReader rez
-            $ flip runFresh (Uid 1)
-            $ evalState ([] :: [UIElement])
-            $ evalState (mempty :: Scene)
+            $ flip runFresh (Uid 0)
+            $ evalState (Attached mempty)
+            $ evalState t
+            $ evalState (Delta 0)
             $ step ref uinetwork
 
-step :: (Member (Reader Rez) r,
-         Member (Fresh Uid) r,
-         Member (State [UIElement]) r,
-         Member (State Scene) r,
-         SetMember Lift (Lift IO) r)
-     => IORef [InputEvent] -> Var (Eff r) InputEvent [UIElement] -> Eff r ()
+step :: (MakesScene r, TimeDelta r, Member (State UTCTime) r)
+     => IORef [InputEvent] -> Var (Eff r) InputEvent [UITree UIElement] -> Eff r ()
 step ref net = do
-    win <- rezWindow <$> ask
+    -- Update input events.
     es <- lift $ readIORef ref
     lift $ writeIORef ref []
 
-    (els', net') <- stepMany es net
-    els   <- get
-    scene <- get
+    -- Update time delta.
+    t  <- get
+    t' <- lift $ getCurrentTime
+    put $ Delta $ realToFrac $ t' `diffUTCTime` t
 
-    let edit  = diffElements els els'
-    scene' <- lift $ editScene edit scene
-    --put root'
-    --put scene'
+    (els, net') <- stepMany es net
 
-    lift $ stepScene win scene'
+    stepScene els
     step ref net'
 
 stepMany :: Monad m => [InputEvent] -> Var m InputEvent b -> m (b, Var m InputEvent b)

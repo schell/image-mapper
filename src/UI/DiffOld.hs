@@ -1,9 +1,11 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module UI.Diff where
 
 import UI.Types
@@ -20,14 +22,53 @@ data UIFamily t ts where
     --V4'       :: V4 Float    -> UIFamily (V4 Float) Nil
     --String'   :: String      -> UIFamily String Nil
     --AABB'     :: UIFamily AABB (V2 Float $ V2 Float $ Nil)
-    UICons'   :: UIFamily [UserInterface] (UserInterface $ [UserInterface] $ Nil)
-    UINil'    :: UIFamily [UserInterface] Nil
-    UIBranch' :: UIFamily (UserInterface) (Uid $ UITransform $ [UserInterface] $ Nil)
-    UILeaf'   :: UIFamily (UserInterface) (Uid $ UITransform $ UIElement $ Nil)
+    UICons'   :: UIFamily UserInterface (UITree UIElement $ UserInterface $ Nil)
+    UINil'    :: UIFamily UserInterface Nil
+    UIBranch' :: UIFamily (UITree UIElement) (Uid $ UITransform $ UserInterface $ Nil)
+    UILeaf'   :: UIFamily (UITree UIElement) (Uid $ UITransform $ UIElement $ Nil)
     Uid'      :: Uid         -> UIFamily Uid Nil
     UITfrm'   :: UITransform -> UIFamily UITransform Nil--(V2 Float $ V2 Float $ V2 Float $ Float $ Nil)
     UILabel'  :: UIElement -> UIFamily UIElement Nil --(String $ (V4 Float) $ (V4 Float) $ Nil)
     deriving (Typeable)
+
+data ListFam a t ts where
+    Nil'  :: ListFam a [a] Nil
+    Cons' :: ListFam a a Nil -> ListFam a [a] (a `Cons` [a] `Cons` Nil)
+    Val'  :: a -> ListFam a a Nil
+
+instance (Eq a, Show a) => Family (ListFam a) where
+    decEq (Cons' a) (Cons' a') = do (Refl, Refl) <- decEq a a'; Just (Refl, Refl)
+    decEq Nil' Nil' = Just (Refl, Refl)
+    decEq (Val' a) (Val' a') | a == a'   = Just (Refl, Refl)
+                             | otherwise = Nothing
+    decEq _ _ = Nothing
+
+    fields (Cons' _) (a:as) = Just (a `CCons` as `CCons` CNil)
+    fields Nil' [] = Just CNil
+    fields (Val' _) _ = Just CNil
+    fields _ _ = Nothing
+
+    apply (Cons' _) (a `CCons` as `CCons` CNil) = a : as
+    apply Nil'  CNil = []
+    apply (Val' a) CNil = a
+
+    string (Cons' _) = "Cons"
+    string (Val' a)  = show a
+    string Nil'      = "Nil"
+
+instance (Eq a, Show a) => Type (ListFam a) a where
+    constructors = [Abstr Val']
+
+instance (Eq a, Show a) => Type (ListFam a) [a] where
+    constructors = [ Concr Nil', Abstr $ \(x : _) -> Cons' $ Val' x ]
+
+diffList :: [Int] -> [Int] -> EditScript (ListFam Int) [Int] [Int]
+diffList = diff
+
+fmapEditList f (Ins (Val' a) es) = Ins (Val' $ f a) (fmapEditList f es)
+fmapEditList f (Cpy (Val' a) es) = Cpy (Val' $ f a) (fmapEditList f es)
+fmapEditList f (Del (Val' a) es) = Del (Val' $ f a) (fmapEditList f es)
+fmapEditList f (CpyTree es) = CpyTree $ fmapEditList f es
 
 ($$) :: x -> xs -> Cons x xs
 a $$ b = CCons a b
@@ -127,10 +168,10 @@ instance Type UIFamily AABB where
     constructors = [Concr AABB']
 -}
 
-instance Type UIFamily UserInterface where
+instance Type UIFamily (UITree UIElement) where
     constructors = [Concr UIBranch', Concr UILeaf']
 
-instance Type UIFamily [UserInterface] where
+instance Type UIFamily UserInterface where
     constructors = [Concr UICons', Concr UINil']
 
 instance Type UIFamily Uid where
@@ -142,8 +183,8 @@ instance Type UIFamily UITransform where
 instance Type UIFamily UIElement where
     constructors = [Abstr UILabel']
 
-diffElement :: UserInterface -> UserInterface -> EditScript UIFamily UserInterface UserInterface
-diffElement = (compress .) . diff
+diffInterface :: UserInterface -> UserInterface -> EditScript UIFamily UserInterface UserInterface
+diffInterface = diff
 
 showEditScript :: EditScriptL f x y -> String
 showEditScript (Ins c d) = "(Ins " ++ string c ++ " " ++ showEditScript d ++ ")"

@@ -3,5 +3,4 @@ module UI (
 ) where
 
 import UI.Types as U
-import UI.Diff as U
 
