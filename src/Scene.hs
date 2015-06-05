@@ -7,6 +7,7 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE GADTs #-}
 module Scene where
 
 import Prelude hiding (sequence_)
@@ -19,17 +20,17 @@ import Control.Eff
 import Control.Eff.Lift
 import Control.Eff.Reader.Strict
 import Control.Eff.State.Strict
-import Control.Eff.Fresh
+import Data.Hashable
 import Data.Bits
 import Data.Typeable
 import Data.Monoid
+import Data.List (intercalate)
 import Data.Text (pack)
 import System.Exit
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
 
---newtype DetachedRenderers = Detached { detached :: IntMap (UIElement, Renderer) }
-newtype AttachedRenderers = Attached { attached :: IntMap (UIElement, Renderer) }
+newtype AttachedRenderers = Attached { attached :: IntMap Renderer }
 
 data Rez = Rez { rezGeom      :: GeomRenderSource
                , rezBez       :: BezRenderSource
@@ -38,12 +39,38 @@ data Rez = Rez { rezGeom      :: GeomRenderSource
                } deriving (Typeable)
 
 type MakesScene r = ( Member (Reader Rez) r
-                    , Member (Fresh Uid) r
                     , Member (State AttachedRenderers) r
                     , SetMember Lift (Lift IO) r
                     )
 
-stepScene :: MakesScene r => [UITree UIElement] -> Eff r ()
+type ModifiesRenderers r = (Member (State AttachedRenderers) r
+                           ,SetMember Lift (Lift IO) r
+                           )
+
+class Renderable a where
+    render :: MakesScene r => a -> Eff r (Maybe Renderer)
+
+instance Renderable Box where
+    render (Box sz c) = uiBox sz c >>= return . Just
+
+instance Renderable Label where
+    render (Label str fn ps fc) = do
+        afc <- rezFontCache <$> ask
+        mefc <- lift $ poll afc
+        case mefc of
+            Just (Right cache) -> uiLabel cache str fn ps fc >>= return . Just
+            _                  -> return Nothing
+
+instance Renderable Button where
+    render (Button box label) = do
+        mb <- render box
+        ml <- render label
+        return ((<>) <$> mb <*> ml)
+
+data Element where
+    Element :: (Renderable a, Hashable a) => a -> Element
+
+stepScene :: MakesScene r => [(Element, Transform)] -> Eff r ()
 stepScene els = do
     win <- rezWindow <$> ask
     lift $ do
@@ -51,7 +78,7 @@ stepScene els = do
         glViewport 0 0 (fromIntegral fbw) (fromIntegral fbh)
         glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT
 
-    mapM_ renderUI els
+    mapM_ (uncurry renderUI) els
 
     lift $ do
         pollEvents
@@ -61,66 +88,66 @@ stepScene els = do
         then exitSuccess
         else threadDelay 100
 
-treeTransform :: UITree a -> Transform
-treeTransform (UIBranch _ t _) = t
-treeTransform (UILeaf _ t _) = t
-
 attach :: (Member (State AttachedRenderers) r, SetMember Lift (Lift IO) r)
-       => Uid -> (UIElement, Renderer) -> Eff r ()
+       => Int -> Renderer -> Eff r ()
 attach i a' = do
-    mAR <- lookupAttached i
-    case mAR of
+    mR <- lookupAttached i
+    case mR of
         Nothing -> return ()
-        Just ar -> lift $ rCleanup $ snd ar
-    modify $ \(Attached rs) -> Attached $ IM.insert (unUid i) a' rs
+        Just r -> lift $ rCleanup r
+    modify $ \(Attached rs) -> Attached $ IM.insert i a' rs
 
 lookupAttached :: (Member (State AttachedRenderers) r)
-               => Uid -> Eff r (Maybe (UIElement, Renderer))
-lookupAttached (Uid i) = (IM.lookup i . attached) <$> get
+               => Int -> Eff r (Maybe Renderer)
+lookupAttached i = (IM.lookup i . attached) <$> get
 
-newRenderer :: MakesScene r => Uid -> UIElement -> Eff r Renderer
+-- | Create a new renderer for the UIElement and attach it with the given
+-- Uid. If the renderer cannot be created return a no-op and attach
+-- nothing.
+newRenderer :: (Renderable a, MakesScene r, Hashable a)
+            => Int -> a -> Eff r Renderer
 newRenderer i el = do
-    r <- uiRenderer el
-    attach i (el, r)
+    mr <- render el
+    r <- case mr of
+        Just r  -> attach i r >> return r
+        Nothing -> return mempty
     return r
 
-renderUI :: MakesScene r => UITree UIElement -> Eff r ()
-renderUI = renderTree mempty
-
-renderTree :: MakesScene r => Transform -> UITree UIElement -> Eff r ()
-renderTree t (UIBranch _ t' ts) = mapM_ (renderTree $ t <> t') ts
-renderTree t (UILeaf i t' el') = do
-    mAR <- lookupAttached i
+renderUI :: (MakesScene r) => Element -> Transform -> Eff r ()
+renderUI (Element a) t = do
+    let h' = hash a
+    mAR <- lookupAttached h'
+    -- | TODO: Deal with the old unused renderers.
     r <- case mAR of
-        Nothing -> newRenderer i el'
-        Just (el, r) -> if el' == el
-                        then return r
-                        else newRenderer i el'
-    lift $ (rRender r) $ t <> t'
+        Nothing -> newRenderer h' a
+        Just r -> return r
+    lift $ (rRender r) t
 
-uiRenderer :: MakesScene r => UIElement -> Eff r Renderer
-uiRenderer (UIBox (AABB (V2 x y) (V2 hw hh)) c) = do
-    lift $ putStrLn "Compiling a box renderer."
-    Rez geom _ w _ <- ask
-    let [tl, tr, br, bl] = [V2 (x-hw) (y-hh), V2 (x+hw) (y-hh), V2 (x+hw) (y+hh), V2 (x-hw) (y+hh)]
-        vs = [tl, tr, br, tl, br, bl]
-        cs = replicate 6 c
-    lift $ colorRenderer w geom GL_TRIANGLES vs cs
-
-uiRenderer (UILabel fn str ps _ bc) = do
-    lift $ putStrLn "Compiling a label renderer."
-    Rez geom _ w afc <- ask
+uiLabel :: MakesScene r
+        => FontCache -> String -> String -> PointSize -> V4 Float
+        -> Eff r Renderer
+uiLabel cache str fn ps fc = do
+    Rez geom bez w _ <- ask
     dpi <- lift $ calculateDpi
     let desc = FontDescriptor (pack fn) $ FontStyle False False
-    lift $ withAsyncRenderer afc $ \fc -> do
-        mRend <- withFont fc desc $ \font -> do
-            let BoundingBox{..} = stringBoundingBox font dpi ps str
-                [tl, tr, br, bl] = [V2 _xMin _yMin, V2 _xMax _yMin, V2 _xMax _yMax, V2 _xMin _yMax]
-                vs = [tl, tr, br, tl, br, bl]
-                cs = replicate 6 bc
-            background <- colorRenderer w geom GL_TRIANGLES vs cs
-            return background
-        case mRend of
-            Nothing -> return mempty
-            Just r  -> return r
+    mRend <- lift $ withFont cache desc $ \font -> do
+        -- | TODO: figure out why the bounding box is too low
+        let BoundingBox{..} = stringBoundingBox font dpi ps str
+            height = _yMax - _yMin
+            fs = FontString font (getPointSize ps) (0, height) str
+        colorFontRenderer w geom bez dpi fs (const fc)
+    case mRend of
+        Nothing -> do lift $ do putStrLn $ "Could not find " ++ show desc
+                                let fnts = enumerateFonts cache
+                                    fstr = intercalate "\n    " $ map show fnts
+                                putStrLn $ "Available:\n" ++ fstr
+                      return mempty
+        Just r  -> return r
 
+uiBox :: MakesScene r => Size -> V4 Float -> Eff r Renderer
+uiBox (V2 w h) c = do
+    Rez geom _ win _ <- ask
+    let [tl, tr, br, bl] = [zero, V2 w 0, V2 w h, V2 0 h]
+        vs = [tl, tr, br, tl, br, bl]
+        cs = replicate 6 c
+    lift $ colorRenderer win geom GL_TRIANGLES vs cs

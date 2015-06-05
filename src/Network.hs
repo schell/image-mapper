@@ -1,113 +1,126 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Arrows #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE PartialTypeSignatures #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 module Network where
 
+import UI.Types
 import Scene
-import UI
 import Prelude hiding (sequence_)
-import System.Remote.Monitoring
-import Gelatin.Core.Render
-import Control.Concurrent.Async
-import Graphics.GL.Core33
+import Gelatin.Core.Render hiding (scaled)
+import Gelatin.Core.Triangulation.Common
 import Control.Varying
-import Control.Monad
-import Control.Applicative
-import Control.Concurrent
-import Control.Concurrent.Async
-import Control.Eff
-import Control.Eff.Lift
-import Control.Eff.Fresh
-import Control.Eff.Reader.Strict
 import Control.Eff.State.Strict
 import Control.Arrow
-import Data.Bits
-import Data.Typeable
-import Data.IORef
-import Data.Monoid
---import Data.Maybe
---import Data.Foldable (sequence_)
-import Data.IntMap (IntMap)
---import Data.Map (Map)
-import Data.Time.Clock
-import System.Exit
-import qualified Data.IntMap as IM
---import qualified Data.Map as M
 
-newtype Delta = Delta { unDelta :: Double }
-
-data InputEvent = NoInputEvent
-                | CharEvent Char
-                | WindowSizeEvent Int Int
-                | KeyEvent Key Int KeyState ModifierKeys
-                -- ^ Key, scancode, pressed/released, mods
-                | MouseButtonEvent MouseButton MouseButtonState ModifierKeys
-                | CursorMoveEvent Double Double
-                | CursorEnterEvent CursorState
-                | ScrollEvent Double Double
-                | FileDropEvent [String]
-                deriving (Show, Eq, Ord)
-
-type DoesIO r = SetMember Lift (Lift IO) r
-
-type MakesUid r = Member (Fresh Uid) r
-
-type TimeDelta r = Member (State Delta) r
-
-type Vareff r = Var (Eff r)
-
-cursorMoved :: Monad m => Var m InputEvent (Maybe (Double, Double))
-cursorMoved = arr check
+--------------------------------------------------------------------------------
+-- Helpers
+--------------------------------------------------------------------------------
+(#) :: a -> (a -> b) -> b
+(#) = flip ($)
+infixl 0 #
+--------------------------------------------------------------------------------
+-- Events
+--------------------------------------------------------------------------------
+cursorMoved :: Monad m => Var m InputEvent (Event (Double, Double))
+cursorMoved = arr check ~> onJust
     where check (CursorMoveEvent x y) = Just (x,y)
           check _ = Nothing
 
-cursorPosition :: Monad m => Var m InputEvent (Event (Double, Double))
-cursorPosition = cursorMoved ~> onJust
-
-cursorStartingAt :: Monad m => (Double, Double) -> Var m InputEvent (Double, Double)
-cursorStartingAt = (cursorPosition ~>) . startingWith
-
-mouseAction :: Monad m => Var m InputEvent (Maybe (MouseButton, MouseButtonState, ModifierKeys))
-mouseAction = arr check
+mouseAction :: Monad m => Var m InputEvent (Event (MouseButton, MouseButtonState, ModifierKeys))
+mouseAction = arr check ~> onJust
     where check (MouseButtonEvent mb mbs mks) = Just (mb,mbs,mks)
           check _ = Nothing
 
 mouseDown :: Monad m => Var m InputEvent (Event (MouseButton, ModifierKeys))
-mouseDown = mouseAction ~> arr check ~> onJust
+mouseDown = mouseAction ~> arr (check . toMaybe) ~> onJust
     where check (Just (mb, MouseButtonState'Pressed, mks)) = Just (mb, mks)
           check _ = Nothing
 
 mouseUp :: Monad m => Var m InputEvent (Event (MouseButton, ModifierKeys))
-mouseUp = mouseAction ~> arr check ~> onJust
+mouseUp = mouseAction ~> arr (check . toMaybe) ~> onJust
     where check (Just (mb, MouseButtonState'Released, mks)) = Just (mb, mks)
           check _ = Nothing
 
 mb1Press :: Monad m => Var m InputEvent (Event (Double, Double))
-mb1Press = latchWith const cursorPosition mouseDown
+mb1Press = latchWith const cursorMoved mouseDown
 
-time :: TimeDelta r => Vareff r b Double
-time = delta (unDelta <$> get) (-)
+cursorInside :: Monad m => Var m InputEvent Poly -> Var m InputEvent (Event ())
+cursorInside vpoly = proc e -> do
+    poly    <- vpoly -< e
+    (mx,my) <- cursorStartingAt (0, 0) -< e
+    let [mx', my'] = map realToFrac [mx,my]
+    onTrue -< pointInside (V2 mx' my') poly
+--------------------------------------------------------------------------------
+-- Basic streams
+--------------------------------------------------------------------------------
+cursorStartingAt :: Monad m => (Double, Double) -> Var m InputEvent (Double, Double)
+cursorStartingAt = (cursorMoved ~>) . startingWith
 
-freshUid :: MakesUid r => Var (Eff r) a Uid
-freshUid = Var $ \_ -> do
-    uid <- fresh
-    return (uid, pure uid)
+time :: (TimeDelta r, RealFrac a) => Vareff r b a
+time = realToFrac <$> delta (unDelta <$> get) (-)
 
-uinetwork :: (MakesUid r, TimeDelta r)
-          => Var (Eff r) InputEvent [UITree UIElement]
-uinetwork = (:[]) <$> tree
-    where tree = UILeaf <$> freshUid <*> t <*> l
-          ab = AABB (V2 0 0) (V2 50 50)
-          l = UIBox <$> pure ab <*> ((fmap realToFrac) <$> c)
-          t = proc e -> do
-                  (x,y) <- mb1Press ~> startingWith (100, 100) -< e
-                  returnA -< translate x y mempty
-          c = time ~> V4 <$> r <*> g <*> b <*> 1
-              where r = tween easeInExpo 0 1 1 `andThenE` tween easeInExpo 1 0 3 `andThen` r
-                    g = tween easeInExpo 0 1 2 `andThenE` tween easeInExpo 1 0 4 `andThen` g
-                    b = tween easeInExpo 0 1 3 `andThenE` tween easeInExpo 1 0 5 `andThen` b
+translated :: Monad m
+           => Var m a (V2 Float) -> Var m a (b, Transform) -> Var m a (b, Transform)
+translated vVec vEl = proc a -> do
+    l       <- vEl  -< a
+    (V2 x y) <- vVec -< a
+    returnA -< translate x y <$> l
+
+scaled :: Monad m
+       => Var m a (V2 Float) -> Var m a (b, Transform) -> Var m a (b, Transform)
+scaled vVec vEl = proc a -> do
+    l       <- vEl  -< a
+    (V2 x y) <- vVec -< a
+    returnA -< scale x y <$> l
+
+rotated :: Monad m
+       => Var m a Float -> Var m a (b, Transform) -> Var m a (b, Transform)
+rotated vRot vEl = proc a -> do
+    l <- vEl  -< a
+    r <- vRot -< a
+    returnA -< rotate r <$> l
+--------------------------------------------------------------------------------
+-- UITree UIElement streams
+--------------------------------------------------------------------------------
+uinetwork :: (TimeDelta r)
+          => Vareff r InputEvent [(Element, Transform)]
+uinetwork = sequenceA [ mainButton ]
+
+mainButton :: (TimeDelta r) => Vareff r InputEvent (Element, Transform)
+mainButton =
+    (,) <$> (Element <$> btn') <*> t
+    where btn' = btn `orE` btnDown
+          btnDown = (btn ~> clr) `tagOn` curs
+          curs = cursorInside poly
+          poly = transformPoly <$> t <*> pure p
+          clr = var $ \(Button b l) -> Button (b{boxColor = V4 0.3 0.3 0.3 1}) l
+          btn = button sz "Button" "Arial Black" (PointSize 32)
+                                                 (V4 0 0 0 1)
+                                                 (V4 1 1 1 1)
+          sz = br
+          p@[_, _, br, _] = [zero, V2 122 0, V2 122 40, V2 0 40]
+          t  = time ~> (Transform <$> (V2 <$> easex <*> easey) <*> pure (V2 1 1) <*> easer)
+          there = tween easeOutExpo 0 100 2
+          back  = tween easeOutExpo 100 0 2
+          waitThere = constant 100 2
+          waitHere = constant 0 2
+          easex = there `andThenE` waitThere `andThenE` back `andThenE` waitHere `andThen` easex
+          easey = waitHere `andThenE` there `andThenE` waitThere `andThenE` back `andThen` easey
+          easer = tween linear 0 (2*pi) 1 `andThenE` constant 0 1 `andThen` easer
+
+
+label :: String -> String -> PointSize -> Color
+      -> Vareff r InputEvent Label
+label str fn ps clr = pure l
+    where l = Label str fn ps clr
+
+box :: Size -> Color -> Vareff r InputEvent Box
+box sz clr = Box <$> pure sz <*> pure clr
+
+button :: Size -> String -> String -> PointSize -> Color -> Color
+       -> Vareff r InputEvent Button
+button sz str fn ps bclr fclr = Button <$> bx <*> lb
+    where bx = box sz bclr
+          lb = label str fn ps fclr
+

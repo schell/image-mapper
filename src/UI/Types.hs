@@ -1,11 +1,22 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 module UI.Types where
 
 import Gelatin.Core.Render
+import GHC.Generics (Generic)
 import Data.Typeable
+import Data.Hashable
+import Control.Varying
 import Control.Lens
+import Control.Eff
+import Control.Eff.Fresh
+import Control.Eff.State.Strict
 
 newtype Uid = Uid { unUid :: Int } deriving (Show, Eq, Enum, Ord, Num)
 
@@ -16,17 +27,45 @@ makeLensesFor [("aabbCenter", "aabbCenter_")
               ,("aabbHalfSize", "aabbHalfSize_")
               ] ''AABB
 
-data UIElement = UILabel { uiLabelString          :: String
-                         , uiLabelFontFamilyName  :: String
-                         , uiLabelFontPointSize   :: PointSize
-                         , uiLabelFontColor       :: V4 Float
-                         , uiLabelBackgroundColor :: V4 Float
-                         }
-               | UIBox { uiBoxAABB  :: AABB
-                       , uiBoxColor :: V4 Float
-                       }
-               deriving (Show, Eq, Typeable)
+type Color = V4 Float
+type Size = V2 Float
 
-data UITree a = UILeaf Uid Transform a
-              | UIBranch Uid Transform [UITree a]
-              deriving (Show)
+data Label = Label { labelString         :: String
+                   , labelFontFamilyName :: String
+                   , labelFontPointSize  :: PointSize
+                   , labelColor          :: Color
+                   } deriving (Show, Eq, Typeable, Generic)
+
+data Box = Box { boxSize  :: Size
+               , boxColor :: Color
+               } deriving (Show, Eq, Typeable, Generic)
+
+data Button = Button { buttonBox   :: Box
+                     , buttonLabel :: Label
+                     } deriving (Show, Eq, Typeable, Generic)
+
+deriving instance Generic PointSize
+instance Hashable PointSize
+instance Hashable Label
+instance Hashable Box
+instance Hashable Button
+
+newtype Delta = Delta { unDelta :: Double }
+
+data InputEvent = NoInputEvent
+                | CharEvent Char
+                | WindowSizeEvent Int Int
+                | KeyEvent Key Int KeyState ModifierKeys
+                -- ^ Key, scancode, pressed/released, mods
+                | MouseButtonEvent MouseButton MouseButtonState ModifierKeys
+                | CursorMoveEvent Double Double
+                | CursorEnterEvent CursorState
+                | ScrollEvent Double Double
+                | FileDropEvent [String]
+                deriving (Show, Eq, Ord)
+
+type MakesUid r = Member (Fresh Uid) r
+
+type TimeDelta r = Member (State Delta) r
+
+type Vareff r = Var (Eff r)

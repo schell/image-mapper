@@ -26,50 +26,6 @@ import Control.Eff.State.Strict
 import Data.IORef
 import Data.Time.Clock
 
---------------------------------------------------------------------------------
--- Stuff I might need later
---------------------------------------------------------------------------------
-    --- Load an image texture
-    --Right img  <- readImage "/Users/schell/Desktop/KDC_desktop.jpg"
-    --let w = fromIntegral $ dynamicMap imageWidth img
-    --    h = fromIntegral $ dynamicMap imageHeight img
-    --    texTfrm = translate 110 110 mempty
-    --tex <- loadTexture img
-    --texR <- textureRenderer win grs tex GL_TRIANGLES
-    --                        [V2 0 0, V2 w 0, V2 w h
-    --                        ,V2 0 0, V2 0 h, V2 w h]
-    --                        [V2 0 0, V2 1 0, V2 1 1
-    --                        ,V2 0 0, V2 0 1, V2 1 1]
---type Renderings = IntMap Rendering
---type Transforms = IntMap Transform
---type ParentEntities = IntMap UniqueId
---type Names = Map String UniqueId
-
-
---transforms :: (Mutates Transforms r,
---               Mutates ParentEntities r)
---           => Eff r Transforms
---transforms = do
---    ts <- get
---    parents <- get
---    let displayMap = fmap findParents parents
---        findParents p = allParents parents p ++ [p]
---        parentTfrms = fmap (foldr mappend mempty . catMaybes . fmap findTfrms) displayMap
---        findTfrms = flip IM.lookup ts . unId
---    return $ IM.unionWith mappend ts parentTfrms
---
----- | Lists a branch of all parents, root first.
---allParents :: ParentEntities -> UniqueId -> [UniqueId]
---allParents parents uid =
---    -- Precaution so we don't recurse if a parent contains itself
---    takeWhile (/= uid) allParents'
---    where allParents' = case IM.lookup (unId uid) parents of
---                            Nothing -> []
---                            Just uid' -> allParents parents uid' ++ [uid']
---------------------------------------------------------------------------------
---
---------------------------------------------------------------------------------
-
 main :: IO ()
 main = do
     putStrLn "aoeusnth"
@@ -78,7 +34,6 @@ main = do
 
     grs <- loadGeomRenderSource
     brs <- loadBezRenderSource
-
 
     glEnable GL_BLEND
     glBlendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA
@@ -123,7 +78,7 @@ main = do
             $ step ref uinetwork
 
 step :: (MakesScene r, TimeDelta r, Member (State UTCTime) r)
-     => IORef [InputEvent] -> Var (Eff r) InputEvent [UITree UIElement] -> Eff r ()
+     => IORef [InputEvent] -> Var (Eff r) InputEvent [(Element, Transform)] -> Eff r ()
 step ref net = do
     -- Update input events.
     es <- lift $ readIORef ref
@@ -143,5 +98,3 @@ stepMany :: Monad m => [InputEvent] -> Var m InputEvent b -> m (b, Var m InputEv
 stepMany (e:[]) y = runVar y e
 stepMany (e:es) y = execVar y e >>= stepMany es
 stepMany []     y = runVar y NoInputEvent
-
-
