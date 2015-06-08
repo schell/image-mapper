@@ -6,6 +6,8 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE GADTs #-}
 module Scene where
@@ -48,29 +50,35 @@ type ModifiesRenderers r = (Member (State AttachedRenderers) r
                            )
 
 class Renderable a where
-    render :: MakesScene r => a -> Eff r (Maybe Renderer)
+    transformOf :: a -> Transform
+    render    :: MakesScene r => a -> Eff r (Maybe Renderer)
 
 instance Renderable Box where
-    render (Box sz c) = uiBox sz c >>= return . Just
+    render (Box _ sz c) = uiBox sz c >>= return . Just
+    transformOf = boxTransform
 
 instance Renderable Label where
-    render (Label str fn ps fc) = do
+    render (Label _ str fn ps fc) = do
         afc <- rezFontCache <$> ask
         mefc <- lift $ poll afc
         case mefc of
             Just (Right cache) -> uiLabel cache str fn ps fc >>= return . Just
             _                  -> return Nothing
+    transformOf = labelTransform
 
 instance Renderable Button where
-    render (Button box label) = do
+    render (Button t box label) = do
         mb <- render box
         ml <- render label
-        return ((<>) <$> mb <*> ml)
+        return $ do b <- mb
+                    l <- ml
+                    return $ (transformRenderer t b) <> (transformRenderer t l)
+    transformOf = buttonTransform
 
 data Element where
-    Element :: (Renderable a, Hashable a) => a -> Element
+    Element  :: (Renderable a, Hashable a) => a -> Element
 
-stepScene :: MakesScene r => [(Element, Transform)] -> Eff r ()
+stepScene :: MakesScene r => [Element] -> Eff r ()
 stepScene els = do
     win <- rezWindow <$> ask
     lift $ do
@@ -78,7 +86,7 @@ stepScene els = do
         glViewport 0 0 (fromIntegral fbw) (fromIntegral fbh)
         glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT
 
-    mapM_ (uncurry renderUI) els
+    mapM_ renderUI els
 
     lift $ do
         pollEvents
@@ -113,15 +121,15 @@ newRenderer i el = do
         Nothing -> return mempty
     return r
 
-renderUI :: (MakesScene r) => Element -> Transform -> Eff r ()
-renderUI (Element a) t = do
+renderUI :: (MakesScene r) => Element -> Eff r ()
+renderUI (Element a) = do
     let h' = hash a
     mAR <- lookupAttached h'
     -- | TODO: Deal with the old unused renderers.
     r <- case mAR of
         Nothing -> newRenderer h' a
         Just r -> return r
-    lift $ (rRender r) t
+    lift $ (rRender r) (transformOf a)
 
 uiLabel :: MakesScene r
         => FontCache -> String -> String -> PointSize -> V4 Float

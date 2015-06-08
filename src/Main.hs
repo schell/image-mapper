@@ -78,7 +78,7 @@ main = do
             $ step ref uinetwork
 
 step :: (MakesScene r, TimeDelta r, Member (State UTCTime) r)
-     => IORef [InputEvent] -> Var (Eff r) InputEvent [(Element, Transform)] -> Eff r ()
+     => IORef [InputEvent] -> Var (Eff r) InputEvent [Element] -> Eff r ()
 step ref net = do
     -- Update input events.
     es <- lift $ readIORef ref

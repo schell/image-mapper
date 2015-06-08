@@ -29,22 +29,31 @@ makeLensesFor [("aabbCenter", "aabbCenter_")
 
 type Color = V4 Float
 type Size = V2 Float
+type Position = V2 Float
+type Scale = V2 Float
+type Rotation = Float
 
-data Label = Label { labelString         :: String
+data Label = Label { labelTransform      :: Transform
+                   , labelString         :: String
                    , labelFontFamilyName :: String
                    , labelFontPointSize  :: PointSize
                    , labelColor          :: Color
                    } deriving (Show, Eq, Typeable, Generic)
 
-data Box = Box { boxSize  :: Size
-               , boxColor :: Color
+data Box = Box { boxTransform :: Transform
+               , boxSize      :: Size
+               , boxColor     :: Color
                } deriving (Show, Eq, Typeable, Generic)
 
-data Button = Button { buttonBox   :: Box
-                     , buttonLabel :: Label
+data Button = Button { buttonTransform :: Transform
+                     , buttonBox       :: Box
+                     , buttonLabel     :: Label
                      } deriving (Show, Eq, Typeable, Generic)
 
+deriving instance Eq Transform
+deriving instance Generic Transform
 deriving instance Generic PointSize
+instance Hashable Transform
 instance Hashable PointSize
 instance Hashable Label
 instance Hashable Box

@@ -7,11 +7,20 @@ module Network where
 import UI.Types
 import Scene
 import Prelude hiding (sequence_)
-import Gelatin.Core.Render hiding (scaled)
+import Gelatin.Core.Render hiding (scaled, trace)
 import Gelatin.Core.Triangulation.Common
 import Control.Varying
+import Control.Varying.Time
 import Control.Eff.State.Strict
 import Control.Arrow
+import Control.Applicative
+import Debug.Trace
+
+data ButtonState = ButtonStateOff | ButtonStateHover | ButtonStateOn
+data ButtonGraph m = ButtonGraph { buttonGraphBtn   :: Var m InputEvent Button
+                                 , buttonGraphPoly  :: Var m InputEvent Poly
+                                 , buttonGraphState :: Var m InputEvent ButtonState
+                                 }
 
 --------------------------------------------------------------------------------
 -- Helpers
@@ -59,68 +68,42 @@ cursorStartingAt = (cursorMoved ~>) . startingWith
 
 time :: (TimeDelta r, RealFrac a) => Vareff r b a
 time = realToFrac <$> delta (unDelta <$> get) (-)
-
-translated :: Monad m
-           => Var m a (V2 Float) -> Var m a (b, Transform) -> Var m a (b, Transform)
-translated vVec vEl = proc a -> do
-    l       <- vEl  -< a
-    (V2 x y) <- vVec -< a
-    returnA -< translate x y <$> l
-
-scaled :: Monad m
-       => Var m a (V2 Float) -> Var m a (b, Transform) -> Var m a (b, Transform)
-scaled vVec vEl = proc a -> do
-    l       <- vEl  -< a
-    (V2 x y) <- vVec -< a
-    returnA -< scale x y <$> l
-
-rotated :: Monad m
-       => Var m a Float -> Var m a (b, Transform) -> Var m a (b, Transform)
-rotated vRot vEl = proc a -> do
-    l <- vEl  -< a
-    r <- vRot -< a
-    returnA -< rotate r <$> l
 --------------------------------------------------------------------------------
 -- UITree UIElement streams
 --------------------------------------------------------------------------------
 uinetwork :: (TimeDelta r)
-          => Vareff r InputEvent [(Element, Transform)]
+          => Vareff r InputEvent [Element]
 uinetwork = sequenceA [ mainButton ]
 
-mainButton :: (TimeDelta r) => Vareff r InputEvent (Element, Transform)
-mainButton =
-    (,) <$> (Element <$> btn') <*> t
-    where btn' = btn `orE` btnDown
-          btnDown = (btn ~> clr) `tagOn` curs
-          curs = cursorInside poly
-          poly = transformPoly <$> t <*> pure p
-          clr = var $ \(Button b l) -> Button (b{boxColor = V4 0.3 0.3 0.3 1}) l
-          btn = button sz "Button" "Arial Black" (PointSize 32)
-                                                 (V4 0 0 0 1)
-                                                 (V4 1 1 1 1)
-          sz = br
-          p@[_, _, br, _] = [zero, V2 122 0, V2 122 40, V2 0 40]
-          t  = time ~> (Transform <$> (V2 <$> easex <*> easey) <*> pure (V2 1 1) <*> easer)
-          there = tween easeOutExpo 0 100 2
-          back  = tween easeOutExpo 100 0 2
-          waitThere = constant 100 2
-          waitHere = constant 0 2
-          easex = there `andThenE` waitThere `andThenE` back `andThenE` waitHere `andThen` easex
-          easey = waitHere `andThenE` there `andThenE` waitThere `andThenE` back `andThen` easey
-          easer = tween linear 0 (2*pi) 1 `andThenE` constant 0 1 `andThen` easer
+mainButton :: (TimeDelta r) => Vareff r InputEvent Element
+mainButton = Element <$> btn
+    where ButtonGraph btn _ _ = btnGraph
 
+btnGraph :: Monad m => ButtonGraph m
+btnGraph = ButtonGraph btn poly st
+    where tfrm :: Monad m => Var m a Transform
+          tfrm = pure mempty
 
-label :: String -> String -> PointSize -> Color
-      -> Vareff r InputEvent Label
-label str fn ps clr = pure l
-    where l = Label str fn ps clr
+          poly :: Monad m => Var m a Poly
+          poly = transformPoly <$> tfrm <*> pure [V2 0 0, V2 100 0, V2 100 50, V2 0 50]
 
-box :: Size -> Color -> Vareff r InputEvent Box
-box sz clr = Box <$> pure sz <*> pure clr
+          mrgst eIn eDwn = (const $ const ButtonStateOn) <$> eIn <*> eDwn
+                           <|> ButtonStateHover <$ eIn
+          st :: Monad m => Var m InputEvent ButtonState
+          st = pure ButtonStateOff `orE` (mrgst <$> cursorInside poly <*> (between mouseDown mouseUp ~> (var $ \s -> trace (show s) s)))
 
-button :: Size -> String -> String -> PointSize -> Color -> Color
-       -> Vareff r InputEvent Button
-button sz str fn ps bclr fclr = Button <$> bx <*> lb
-    where bx = box sz bclr
-          lb = label str fn ps fclr
+          btn :: Monad m => Var m InputEvent Button
+          btn = Button <$> pure mempty <*> bx <*> lbl
 
+          bx :: Monad m => Var m InputEvent Box
+          bx = Box <$> pure mempty <*> (sz <$> poly) <*> (stateColor <$> st)
+
+          sz [_, _, s, _] = s
+          sz _ = 0
+
+          stateColor ButtonStateOff   = 0.3
+          stateColor ButtonStateHover = 0.4
+          stateColor ButtonStateOn = 0.6
+
+          lbl :: Monad m => Var m a Label
+          lbl = Label <$> pure mempty <*> pure "Button" <*> pure "Arial" <*> (pure $ PointSize 32) <*> 1
