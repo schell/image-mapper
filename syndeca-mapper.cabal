@@ -48,8 +48,12 @@ build-type:          Simple
 -- Constraint on the version of Cabal needed to build this package.
 cabal-version:       >=1.10
 
+--------------------------------------------------------------------------------
 
-executable syndeca-mapper
+
+--------------------------------------------------------------------------------
+
+executable main
   ghc-options:         -threaded -Wall
   -- .hs or .lhs file containing the Main module.
   main-is:             Main.hs
@@ -62,6 +66,8 @@ executable syndeca-mapper
 
   -- Other library packages from which modules are imported.
   build-depends:       base >=4.7,
+                       GLFW-b >= 1.4.7 && < 1.4.8,
+                       JuicyPixels >= 3.2.3 && < 3.2.4,
                        gelatin-core,
                        FontyFruity,
                        linear,
@@ -87,3 +93,40 @@ executable syndeca-mapper
   -- Base language which the package is written in.
   default-language:    Haskell2010
 
+executable push
+  ghc-options:         -threaded -Wall
+  -- .hs or .lhs file containing the Main module.
+  main-is:             Subpub.hs
+
+  -- Modules included in this executable, other than Main.
+  -- other-modules:
+
+  -- LANGUAGE extensions used by modules in this package.
+  -- other-extensions:
+
+  -- Other library packages from which modules are imported.
+  build-depends:       base >=4.7,
+                       GLFW-b >= 1.4.7 && < 1.4.8,
+                       JuicyPixels >= 3.2.3 && < 3.2.4,
+                       gelatin-core,
+                       FontyFruity,
+                       linear,
+                       containers,
+                       stm,
+                       async,
+                       time,
+                       extensible-effects,
+                       varying,
+                       gl,
+                       mtl,
+                       transformers,
+                       ekg,
+                       lens >= 4.9 && < 4.10,
+                       text >= 1.2 && < 1.3,
+                       hashable >= 1.2 && < 1.3
+
+  -- Directories containing source files.
+  hs-source-dirs:      src
+
+  -- Base language which the package is written in.
+  default-language:    Haskell2010

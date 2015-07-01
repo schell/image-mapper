@@ -5,79 +5,35 @@
 module Network where
 
 import UI.Types
+import Network.System
+import Network.MappingScreen
 import Scene
+import System
 import Prelude hiding (sequence_)
-import Gelatin.Core.Render hiding (scaled, trace)
+import Linear
+import Graphics.UI.GLFW hiding (Image(..))
+import Graphics.Text.TrueType
+import Gelatin.Core.Render
 import Gelatin.Core.Triangulation.Common
+import Control.Eff
+import Control.Eff.Lift
 import Control.Varying
 import Control.Varying.Time
 import Control.Eff.State.Strict
 import Control.Arrow
 import Control.Applicative
-import Debug.Trace
-
-data ButtonState = ButtonStateOff | ButtonStateHover | ButtonStateOn
-data ButtonGraph m = ButtonGraph { buttonGraphBtn   :: Var m InputEvent Button
-                                 , buttonGraphPoly  :: Var m InputEvent Poly
-                                 , buttonGraphState :: Var m InputEvent ButtonState
-                                 }
 
 --------------------------------------------------------------------------------
--- Helpers
+-- Element streams
 --------------------------------------------------------------------------------
-(#) :: a -> (a -> b) -> b
-(#) = flip ($)
-infixl 0 #
---------------------------------------------------------------------------------
--- Events
---------------------------------------------------------------------------------
-cursorMoved :: Monad m => Var m InputEvent (Event (Double, Double))
-cursorMoved = arr check ~> onJust
-    where check (CursorMoveEvent x y) = Just (x,y)
-          check _ = Nothing
-
-mouseAction :: Monad m => Var m InputEvent (Event (MouseButton, MouseButtonState, ModifierKeys))
-mouseAction = arr check ~> onJust
-    where check (MouseButtonEvent mb mbs mks) = Just (mb,mbs,mks)
-          check _ = Nothing
-
-mouseDown :: Monad m => Var m InputEvent (Event (MouseButton, ModifierKeys))
-mouseDown = mouseAction ~> arr (check . toMaybe) ~> onJust
-    where check (Just (mb, MouseButtonState'Pressed, mks)) = Just (mb, mks)
-          check _ = Nothing
-
-mouseUp :: Monad m => Var m InputEvent (Event (MouseButton, ModifierKeys))
-mouseUp = mouseAction ~> arr (check . toMaybe) ~> onJust
-    where check (Just (mb, MouseButtonState'Released, mks)) = Just (mb, mks)
-          check _ = Nothing
-
-mb1Press :: Monad m => Var m InputEvent (Event (Double, Double))
-mb1Press = latchWith const cursorMoved mouseDown
-
-cursorInside :: Monad m => Var m InputEvent Poly -> Var m InputEvent (Event ())
-cursorInside vpoly = proc e -> do
-    poly    <- vpoly -< e
-    (mx,my) <- cursorStartingAt (0, 0) -< e
-    let [mx', my'] = map realToFrac [mx,my]
-    onTrue -< pointInside (V2 mx' my') poly
---------------------------------------------------------------------------------
--- Basic streams
---------------------------------------------------------------------------------
-cursorStartingAt :: Monad m => (Double, Double) -> Var m InputEvent (Double, Double)
-cursorStartingAt = (cursorMoved ~>) . startingWith
-
-time :: (TimeDelta r, RealFrac a) => Vareff r b a
-time = realToFrac <$> delta (unDelta <$> get) (-)
---------------------------------------------------------------------------------
--- UITree UIElement streams
---------------------------------------------------------------------------------
-uinetwork :: (TimeDelta r)
+uinetwork :: (TimeDelta r, MakesScene r)
           => Vareff r InputEvent [Element]
-uinetwork = sequenceA [ mainButton ]
+uinetwork = sequenceA [ mainButton, mappingScreen ]
 
 mainButton :: (TimeDelta r) => Vareff r InputEvent Element
 mainButton = Element <$> btn
     where ButtonGraph btn _ _ = btnGraph
+
 
 btnGraph :: Monad m => ButtonGraph m
 btnGraph = ButtonGraph btn poly st
@@ -90,7 +46,8 @@ btnGraph = ButtonGraph btn poly st
           mrgst eIn eDwn = (const $ const ButtonStateOn) <$> eIn <*> eDwn
                            <|> ButtonStateHover <$ eIn
           st :: Monad m => Var m InputEvent ButtonState
-          st = pure ButtonStateOff `orE` (mrgst <$> cursorInside poly <*> (between mouseDown mouseUp ~> (var $ \s -> trace (show s) s)))
+          st = pure ButtonStateOff `orE` (mrgst <$> cursorInside poly
+                                                <*> between mouseDown mouseUp)
 
           btn :: Monad m => Var m InputEvent Button
           btn = Button <$> pure mempty <*> bx <*> lbl
@@ -106,4 +63,4 @@ btnGraph = ButtonGraph btn poly st
           stateColor ButtonStateOn = 0.6
 
           lbl :: Monad m => Var m a Label
-          lbl = Label <$> pure mempty <*> pure "Button" <*> pure "Arial" <*> (pure $ PointSize 32) <*> 1
+          lbl = Label <$> pure mempty <*> pure "Save" <*> pure "Arial" <*> (pure $ PointSize 32) <*> 1

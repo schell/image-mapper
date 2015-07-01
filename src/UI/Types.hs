@@ -8,6 +8,9 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 module UI.Types where
 
+import Linear
+import Graphics.UI.GLFW
+import Graphics.Text.TrueType
 import Gelatin.Core.Render
 import GHC.Generics (Generic)
 import Data.Typeable
@@ -50,9 +53,16 @@ data Button = Button { buttonTransform :: Transform
                      , buttonLabel     :: Label
                      } deriving (Show, Eq, Typeable, Generic)
 
+data Picture = Pic { picTransform :: Transform
+                   , picPath      :: String
+                   , picWidth     :: Int
+                   , picHeight    :: Int
+                   } deriving (Show, Eq, Typeable, Generic)
+
 deriving instance Eq Transform
 deriving instance Generic Transform
 deriving instance Generic PointSize
+instance Hashable Picture
 instance Hashable Transform
 instance Hashable PointSize
 instance Hashable Label

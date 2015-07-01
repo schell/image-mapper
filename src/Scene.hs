@@ -14,7 +14,12 @@ module Scene where
 
 import Prelude hiding (sequence_)
 import UI
-import Gelatin.Core.Render hiding (el, trace)
+import Linear
+import Gelatin.Core.Render
+import Graphics.UI.GLFW hiding (Image(..))
+import Graphics.GL.Types
+import Graphics.Text.TrueType
+import Codec.Picture
 import Control.Concurrent.Async
 import Graphics.GL.Core33
 import Control.Concurrent
@@ -26,32 +31,71 @@ import Data.Hashable
 import Data.Bits
 import Data.Typeable
 import Data.Monoid
+import Data.Maybe
 import Data.List (intercalate)
 import Data.Text (pack)
 import System.Exit
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
 
-newtype AttachedRenderers = Attached { attached :: IntMap Renderer }
+stepScene :: MakesScene r => [Element] -> Eff r ()
+stepScene els = do
+    win <- rezWindow <$> ask
+    lift $ do
+        (fbw,fbh) <- getFramebufferSize win
+        glViewport 0 0 (fromIntegral fbw) (fromIntegral fbh)
+        glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT
 
-data Rez = Rez { rezGeom      :: GeomRenderSource
-               , rezBez       :: BezRenderSource
-               , rezWindow    :: Window
-               , rezFontCache :: Async FontCache
-               } deriving (Typeable)
+    mapM_ renderUI els
 
-type MakesScene r = ( Member (Reader Rez) r
-                    , Member (State AttachedRenderers) r
-                    , SetMember Lift (Lift IO) r
-                    )
+    lift $ do
+        pollEvents
+        swapBuffers win
+        shouldClose <- windowShouldClose win
+        if shouldClose
+        then exitSuccess
+        else threadDelay 100
 
-type ModifiesRenderers r = (Member (State AttachedRenderers) r
-                           ,SetMember Lift (Lift IO) r
-                           )
+renderUI :: (MakesScene r) => Element -> Eff r ()
+renderUI (Element a) = do
+    let h' = hash a
+    mAR <- lookupAttached h'
+    -- | TODO: Deal with the old unused renderers.
+    r <- case mAR of
+        Nothing -> newRenderer h' a
+        Just r  -> return r
+    lift $ (rRender r) (transformOf a)
 
-class Renderable a where
-    transformOf :: a -> Transform
-    render    :: MakesScene r => a -> Eff r (Maybe Renderer)
+anEmptyElement :: Element
+anEmptyElement = Element ()
+
+data Element where
+    Element  :: (Renderable a, Hashable a) => a -> Element
+
+instance Renderable a => Renderable [a] where
+    render es = do rs <- catMaybes <$> mapM render es
+                   return $ Just $ mconcat rs
+    transformOf _ = mempty
+
+instance Renderable a => Renderable (Maybe a) where
+    render (Just a) = render a
+    render _        = return Nothing
+    transformOf (Just a) = transformOf a
+    transformOf _        = mempty
+
+instance Renderable () where
+    render () = return $ Just mempty
+    transformOf = mempty
+
+instance Renderable Picture where
+    render (Pic _ fp w h) = do
+        eStrOrImg <- lift $ readImage fp
+        case eStrOrImg of
+            Left err -> lift $ putStrLn err >> return Nothing
+            Right i  -> do tx <- lift $ loadTexture i
+                           r  <- uiPic tx w h
+                           return $ Just r
+    transformOf = picTransform
 
 instance Renderable Box where
     render (Box _ sz c) = uiBox sz c >>= return . Just
@@ -75,26 +119,9 @@ instance Renderable Button where
                     return $ (transformRenderer t b) <> (transformRenderer t l)
     transformOf = buttonTransform
 
-data Element where
-    Element  :: (Renderable a, Hashable a) => a -> Element
-
-stepScene :: MakesScene r => [Element] -> Eff r ()
-stepScene els = do
-    win <- rezWindow <$> ask
-    lift $ do
-        (fbw,fbh) <- getFramebufferSize win
-        glViewport 0 0 (fromIntegral fbw) (fromIntegral fbh)
-        glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT
-
-    mapM_ renderUI els
-
-    lift $ do
-        pollEvents
-        swapBuffers win
-        shouldClose <- windowShouldClose win
-        if shouldClose
-        then exitSuccess
-        else threadDelay 100
+class Renderable a where
+    transformOf :: a -> Transform
+    render    :: MakesScene r => a -> Eff r (Maybe Renderer)
 
 attach :: (Member (State AttachedRenderers) r, SetMember Lift (Lift IO) r)
        => Int -> Renderer -> Eff r ()
@@ -109,6 +136,26 @@ lookupAttached :: (Member (State AttachedRenderers) r)
                => Int -> Eff r (Maybe Renderer)
 lookupAttached i = (IM.lookup i . attached) <$> get
 
+newtype AttachedRenderers = Attached { attached :: IntMap Renderer }
+
+data Rez = Rez { rezGeom      :: GeomRenderSource
+               , rezBez       :: BezRenderSource
+               , rezWindow    :: Window
+               , rezFontCache :: Async FontCache
+               } deriving (Typeable)
+
+type MakesScene r = ( ReadsRez r
+                    , Member (State AttachedRenderers) r
+                    , DoesIO r
+                    )
+
+type ReadsRez r = Member (Reader Rez) r
+type DoesIO r = SetMember Lift (Lift IO) r
+
+type ModifiesRenderers r = (Member (State AttachedRenderers) r
+                           ,SetMember Lift (Lift IO) r
+                           )
+
 -- | Create a new renderer for the UIElement and attach it with the given
 -- Uid. If the renderer cannot be created return a no-op and attach
 -- nothing.
@@ -121,29 +168,29 @@ newRenderer i el = do
         Nothing -> return mempty
     return r
 
-renderUI :: (MakesScene r) => Element -> Eff r ()
-renderUI (Element a) = do
-    let h' = hash a
-    mAR <- lookupAttached h'
-    -- | TODO: Deal with the old unused renderers.
-    r <- case mAR of
-        Nothing -> newRenderer h' a
-        Just r -> return r
-    lift $ (rRender r) (transformOf a)
+uiPic :: MakesScene r => GLuint -> Int -> Int -> Eff r Renderer
+uiPic tx w' h' = do
+    Rez grs _ win _ <- ask
+    let [w,h] = map fromIntegral [w',h']
+        tl = V2 0 0
+        tr = V2 w 0
+        bl = V2 0 h
+        br = V2 w h
+        vs = [tl, tr, bl, tr, bl, br]
+        gs = map (/ V2 w h) vs
+    lift $ textureRenderer win grs tx GL_TRIANGLES vs gs
 
 uiLabel :: MakesScene r
         => FontCache -> String -> String -> PointSize -> V4 Float
         -> Eff r Renderer
 uiLabel cache str fn ps fc = do
-    Rez geom bez w _ <- ask
-    dpi <- lift $ calculateDpi
+    Rez grs brs w _ <- ask
     let desc = FontDescriptor (pack fn) $ FontStyle False False
     mRend <- lift $ withFont cache desc $ \font -> do
         -- | TODO: figure out why the bounding box is too low
-        let BoundingBox{..} = stringBoundingBox font dpi ps str
-            height = _yMax - _yMin
-            fs = FontString font (getPointSize ps) (0, height) str
-        colorFontRenderer w geom bez dpi fs (const fc)
+        let px = getPointSize ps
+            fs = FontString font px (0, px) str
+        colorFontRenderer w grs brs fs (const fc)
     case mRend of
         Nothing -> do lift $ do putStrLn $ "Could not find " ++ show desc
                                 let fnts = enumerateFonts cache

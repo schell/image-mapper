@@ -6,6 +6,7 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module Main where
 
@@ -13,8 +14,13 @@ import Network
 import UI
 import Scene
 import Prelude hiding (sequence_)
+import Linear
 import System.Remote.Monitoring
+import System.Environment
+import System.Exit
 import Gelatin.Core.Render
+import Gelatin.Core.Color
+import Graphics.UI.GLFW
 import Graphics.GL.Core33
 import Control.Varying
 import Control.Monad
@@ -25,13 +31,49 @@ import Control.Eff.Reader.Strict
 import Control.Eff.State.Strict
 import Data.IORef
 import Data.Time.Clock
+import Data.List (isPrefixOf)
+import Data.Maybe (catMaybes)
 
 main :: IO ()
 main = do
-    putStrLn "aoeusnth"
-    void $ forkServer "localhost" 8000
-    win <- initWindow 800 600 "Syndeca Mapper"
+    usingRift <- do args <- getArgs
+                    case args of
+                        "rift":_ -> return True
+                        _        -> return False
 
+    void $ forkServer "localhost" 8000
+
+    if usingRift then startupRift else startup
+
+startup :: IO ()
+startup = do
+    True <- initGelatin
+    w    <- newWindow 800 600 "Syndeca Mapper" Nothing Nothing
+    setWindowPos w 925 800
+    startupRest w
+
+startupRift :: IO ()
+startupRift = do
+    putStrLn "Starting up the Rift."
+    --1 <- c'ovr_Initialize 0
+
+    True <- initGelatin
+
+    mmons <- getMonitors
+    names <- catMaybes <$> case mmons of
+                 Just mons -> mapM (\mon -> do mname <- getMonitorName mon
+                                               return $ (mon,) <$> mname)
+                                   mons
+                 Nothing   -> return []
+
+    (mon,name) <- case filter (("Rift" `isPrefixOf`) . snd) names of
+                      a:_ -> return a
+                      _   -> do putStrLn "Could not find the rift."
+                                exitFailure
+    newWindow 800 600 name (Just mon) Nothing >>= startupRest
+
+startupRest :: Window -> IO ()
+startupRest win = do
     grs <- loadGeomRenderSource
     brs <- loadBezRenderSource
 
@@ -65,6 +107,9 @@ main = do
     setDropCallback win $ Just $ \_ fs -> do
         putStrLn $ "Got files:\n" ++ unlines fs
         input $ FileDropEvent fs
+
+    cursor <- createStandardCursor StandardCursorShape'Hand
+    setCursor win cursor
 
     afc <- compileFontCache
     t   <- getCurrentTime
