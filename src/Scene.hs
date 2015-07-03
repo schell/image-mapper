@@ -13,79 +13,60 @@
 module Scene where
 
 import Prelude hiding (sequence_)
-import UI
+import Types
+import Network
 import Linear
 import Gelatin.Core.Render
-import Graphics.UI.GLFW hiding (Image(..))
 import Graphics.GL.Types
 import Graphics.Text.TrueType
 import Codec.Picture
 import Control.Concurrent.Async
 import Graphics.GL.Core33
-import Control.Concurrent
 import Control.Eff
 import Control.Eff.Lift
 import Control.Eff.Reader.Strict
 import Control.Eff.State.Strict
 import Data.Hashable
-import Data.Bits
-import Data.Typeable
 import Data.Monoid
 import Data.Maybe
 import Data.List (intercalate)
 import Data.Text (pack)
-import System.Exit
-import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
 
-stepScene :: MakesScene r => [Element] -> Eff r ()
-stepScene els = do
-    win <- rezWindow <$> ask
-    lift $ do
-        (fbw,fbh) <- getFramebufferSize win
-        glViewport 0 0 (fromIntegral fbw) (fromIntegral fbh)
-        glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT
-
-    mapM_ renderUI els
-
-    lift $ do
-        pollEvents
-        swapBuffers win
-        shouldClose <- windowShouldClose win
-        if shouldClose
-        then exitSuccess
-        else threadDelay 100
-
-renderUI :: (MakesScene r) => Element -> Eff r ()
-renderUI (Element a) = do
-    let h' = hash a
-    mAR <- lookupAttached h'
-    -- | TODO: Deal with the old unused renderers.
-    r <- case mAR of
-        Nothing -> newRenderer h' a
-        Just r  -> return r
+renderElement :: (MakesScene r, StatsRenderers r) => Element -> Eff r ()
+renderElement (Element a) = do
+    r <- getRenderer a
     lift $ (rRender r) (transformOf a)
 
-anEmptyElement :: Element
-anEmptyElement = Element ()
+getRenderer :: (StatsRenderers r, MakesScene r, Renderable a, Hashable a, Show a)
+            => a -> Eff r Renderer
+getRenderer a
+    | [] <- childElementsOf a = do
+        let h' = hash a
+        setUsed h'
+        mAR <- lookupAttached h'
+        case mAR of
+            Nothing -> newRenderer h' a
+            Just r  -> return r
+    | otherwise = do
+        let es  = childElementsOf a
+        rs <- mapM getRenderer es
+        let ts  = map transformOf es
+            rs' = zipWith transformRenderer ts rs
+        return $ mconcat rs'
+--------------------------------------------------------------------------------
+-- Renderables
+--------------------------------------------------------------------------------
+instance Renderable Network where
+    render (Network _ _) = return Nothing
+    transformOf = const mempty
+    childElementsOf (Network m l) = [Element m, Element l]
 
-data Element where
-    Element  :: (Renderable a, Hashable a) => a -> Element
-
-instance Renderable a => Renderable [a] where
-    render es = do rs <- catMaybes <$> mapM render es
-                   return $ Just $ mconcat rs
-    transformOf _ = mempty
-
-instance Renderable a => Renderable (Maybe a) where
-    render (Just a) = render a
-    render _        = return Nothing
-    transformOf (Just a) = transformOf a
-    transformOf _        = mempty
-
-instance Renderable () where
-    render () = return $ Just mempty
-    transformOf = mempty
+instance Renderable MappingScreen where
+    render (MappingScreen _ _ _ _) = return Nothing
+    transformOf = mappingScreenTfrm
+    childElementsOf (MappingScreen _ bg p (MSInfo ia ib)) =
+        [Element bg, Element p, Element ia, Element ib]
 
 instance Renderable Picture where
     render (Pic _ fp w h) = do
@@ -119,10 +100,45 @@ instance Renderable Button where
                     return $ (transformRenderer t b) <> (transformRenderer t l)
     transformOf = buttonTransform
 
-class Renderable a where
-    transformOf :: a -> Transform
-    render    :: MakesScene r => a -> Eff r (Maybe Renderer)
+instance Renderable Element where
+    render (Element a)          = render a
+    transformOf (Element a)     = transformOf a
+    childElementsOf (Element a) = childElementsOf a
 
+instance Renderable a => Renderable [a] where
+    render es = do rs <- catMaybes <$> mapM render es
+                   return $ Just $ mconcat rs
+    transformOf _ = mempty
+
+instance Renderable a => Renderable (Maybe a) where
+    render (Just a) = render a
+    render _        = return Nothing
+    transformOf (Just a) = transformOf a
+    transformOf _        = mempty
+
+instance Renderable () where
+    render () = return $ Just mempty
+    transformOf = mempty
+
+class Renderable a where
+    transformOf   :: a -> Transform
+    render        :: MakesScene r => a -> Eff r (Maybe Renderer)
+    childElementsOf :: a -> [Element]
+    childElementsOf _ = []
+--------------------------------------------------------------------------------
+-- Element
+--------------------------------------------------------------------------------
+instance Hashable Element where
+    hashWithSalt s (Element a) = hashWithSalt s a
+
+instance Show Element where
+    show (Element a) = "Element{ " ++ show a ++ " }"
+
+data Element where
+    Element  :: (Show a, Renderable a, Hashable a) => a -> Element
+--------------------------------------------------------------------------------
+-- Handling Renderers as Resources
+--------------------------------------------------------------------------------
 attach :: (Member (State AttachedRenderers) r, SetMember Lift (Lift IO) r)
        => Int -> Renderer -> Eff r ()
 attach i a' = do
@@ -132,32 +148,31 @@ attach i a' = do
         Just r -> lift $ rCleanup r
     modify $ \(Attached rs) -> Attached $ IM.insert i a' rs
 
+setUsed :: (Member (State UsedThisFrame) r) => Int -> Eff r ()
+setUsed i = modify $ \(UsedThisFrame rs) -> UsedThisFrame $ IM.insertWith (+) i 1 rs
+
 lookupAttached :: (Member (State AttachedRenderers) r)
                => Int -> Eff r (Maybe Renderer)
 lookupAttached i = (IM.lookup i . attached) <$> get
 
-newtype AttachedRenderers = Attached { attached :: IntMap Renderer }
+dropUnusedRenderers :: (StatsRenderers r, ModifiesRenderers r, DoesIO r) => Eff r ()
+dropUnusedRenderers = do
+    Attached rs <- get
+    UsedThisFrame ts <- get
 
-data Rez = Rez { rezGeom      :: GeomRenderSource
-               , rezBez       :: BezRenderSource
-               , rezWindow    :: Window
-               , rezFontCache :: Async FontCache
-               } deriving (Typeable)
+    let toClean = IM.difference rs ts
+        clean = (lift . rCleanup) <$> toClean
+        left  = IM.difference rs toClean
 
-type MakesScene r = ( ReadsRez r
-                    , Member (State AttachedRenderers) r
-                    , DoesIO r
-                    )
+    _ <- sequence clean
 
-type ReadsRez r = Member (Reader Rez) r
-type DoesIO r = SetMember Lift (Lift IO) r
-
-type ModifiesRenderers r = (Member (State AttachedRenderers) r
-                           ,SetMember Lift (Lift IO) r
-                           )
-
--- | Create a new renderer for the UIElement and attach it with the given
--- Uid. If the renderer cannot be created return a no-op and attach
+    put $ UsedThisFrame mempty
+    put $ Attached left
+--------------------------------------------------------------------------------
+--
+--------------------------------------------------------------------------------
+-- | Create a new renderer for an element and attaches it with the given
+-- UID. If the renderer cannot be created return a no-op and attach
 -- nothing.
 newRenderer :: (Renderable a, MakesScene r, Hashable a)
             => Int -> a -> Eff r Renderer
@@ -206,3 +221,4 @@ uiBox (V2 w h) c = do
         vs = [tl, tr, br, tl, br, bl]
         cs = replicate 6 c
     lift $ colorRenderer win geom GL_TRIANGLES vs cs
+

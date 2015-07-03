@@ -3,7 +3,6 @@
 module Main where
 
 import Network
-import UI
 import Scene
 import Prelude hiding (sequence_)
 import Linear

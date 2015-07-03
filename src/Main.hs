@@ -11,17 +11,16 @@
 module Main where
 
 import Network
-import UI
 import Scene
+import Types
 import Prelude hiding (sequence_)
-import Linear
 import System.Remote.Monitoring
 import System.Environment
 import System.Exit
 import Gelatin.Core.Render
-import Gelatin.Core.Color
 import Graphics.UI.GLFW
 import Graphics.GL.Core33
+import Control.Concurrent
 import Control.Varying
 import Control.Monad
 import Control.Eff
@@ -33,6 +32,7 @@ import Data.IORef
 import Data.Time.Clock
 import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes)
+import Data.Bits
 
 main :: IO ()
 main = do
@@ -108,8 +108,8 @@ startupRest win = do
         putStrLn $ "Got files:\n" ++ unlines fs
         input $ FileDropEvent fs
 
-    cursor <- createStandardCursor StandardCursorShape'Hand
-    setCursor win cursor
+    --cursor <- createStandardCursor StandardCursorShape'Hand
+    --setCursor win cursor
 
     afc <- compileFontCache
     t   <- getCurrentTime
@@ -118,15 +118,20 @@ startupRest win = do
     runLift $ flip runReader rez
             $ flip runFresh (Uid 0)
             $ evalState (Attached mempty)
+            $ evalState (UsedThisFrame mempty)
             $ evalState t
             $ evalState (Delta 0)
-            $ step ref uinetwork
+            $ step ref (Element <$> network)
 
-step :: (MakesScene r, TimeDelta r, Member (State UTCTime) r)
-     => IORef [InputEvent] -> Var (Eff r) InputEvent [Element] -> Eff r ()
+step :: ( MakesScene r
+        , StatsRenderers r
+        , TimeDelta r
+        , Member (State UTCTime) r
+        )
+     => IORef [InputEvent] -> Var (Eff r) InputEvent Element -> Eff r ()
 step ref net = do
     -- Update input events.
-    es <- lift $ readIORef ref
+    events <- lift $ readIORef ref
     lift $ writeIORef ref []
 
     -- Update time delta.
@@ -134,12 +139,34 @@ step ref net = do
     t' <- lift $ getCurrentTime
     put $ Delta $ realToFrac $ t' `diffUTCTime` t
 
-    (els, net') <- stepMany es net
+    -- Step the network
+    (container, net') <- stepMany events net
 
-    stepScene els
+    renderFrame [Element container]
     step ref net'
 
-stepMany :: Monad m => [InputEvent] -> Var m InputEvent b -> m (b, Var m InputEvent b)
+stepMany :: (Monad m, Monoid a) => [a] -> Var m a b -> m (b, Var m a b)
 stepMany (e:[]) y = runVar y e
 stepMany (e:es) y = execVar y e >>= stepMany es
-stepMany []     y = runVar y NoInputEvent
+stepMany []     y = runVar y mempty
+
+renderFrame :: (MakesScene r, StatsRenderers r) => [Element] -> Eff r ()
+renderFrame els = do
+    win <- rezWindow <$> ask
+    lift $ do
+        (fbw,fbh) <- getFramebufferSize win
+        glViewport 0 0 (fromIntegral fbw) (fromIntegral fbh)
+        glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT
+
+    mapM_ renderElement els
+
+    lift $ do
+        pollEvents
+        swapBuffers win
+        shouldClose <- windowShouldClose win
+        if shouldClose
+        then exitSuccess
+        else threadDelay 100
+
+    dropUnusedRenderers
+

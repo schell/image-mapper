@@ -4,8 +4,7 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 module Network.System where
 
-import UI.Types
-import Scene
+import Types
 import Prelude hiding (sequence_)
 import Linear
 import Graphics.UI.GLFW hiding (Image(..))
@@ -21,6 +20,11 @@ import Control.Arrow
 --------------------------------------------------------------------------------
 -- Events
 --------------------------------------------------------------------------------
+mouseScrolled :: Monad m => Var m InputEvent (Event (V2 Float))
+mouseScrolled = arr check ~> onJust
+    where check (ScrollEvent x y) = Just $ fmap realToFrac $ V2 x y
+          check _ = Nothing
+
 windowResized :: Monad m => Var m InputEvent (Event (Int, Int))
 windowResized = arr check ~> onJust
     where check (WindowSizeEvent w h) = Just (w,h)
@@ -70,11 +74,13 @@ cursorStartingAt :: Monad m => (Double, Double) -> Var m InputEvent (Double, Dou
 cursorStartingAt = (cursorMoved ~>) . startingWith
 
 windowSize :: (Member (Reader Rez) r, SetMember Lift (Lift IO) r)
-           => Vareff r InputEvent (Int, Int)
+           => Vareff r InputEvent (V2 Float)
 windowSize = Var $ \_ -> do
     win <- rezWindow <$> ask
     (w,h) <- lift $ getWindowSize win
-    return ((w,h), windowResized ~> startingWith (w,h))
+    let v  = fmap realToFrac $ V2 w h
+        resized = (fmap realToFrac . uncurry V2 <$>) <$> windowResized
+    return (v, resized ~> startingWith v)
 
 time :: (TimeDelta r, RealFrac a) => Vareff r b a
 time = realToFrac <$> delta (unDelta <$> get) (-)
