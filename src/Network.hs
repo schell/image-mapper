@@ -4,7 +4,9 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 module Network (network, Network(..), module M) where
 
-import Types
+import Types.Internal
+import Types.Renderable
+import UI.Label
 import Network.MappingScreen as M
 import Prelude hiding (sequence_)
 import Linear
@@ -16,17 +18,23 @@ import Control.Varying
 import Control.Eff.State.Strict
 import Data.Hashable
 import Data.Typeable
+import Data.Monoid
 import qualified Data.IntMap as IM
 
-network :: (TimeDelta r, MakesScene r)
+network :: (MakesScene r)
         => Vareff r InputEvent Network
 network = Network <$> mappingScreen
                   <*> debugInfo
+                  <*> (mappingScreenRequests <$> mappingScreen)
 
 debugInfo :: MakesScene r => Vareff r InputEvent Label
-debugInfo = Label <$> tfrm <*> str <*> pure "Arial" <*> (pure $ PointSize 12) <*> pure white
+debugInfo = Label <$> tfrm
+                  <*> str
+                  <*> systemPathForFont "Arial" False False
+                  <*> (pure $ PointSize 12)
+                  <*> pure white
     where tfrm :: (MakesScene r) => Vareff r InputEvent Transform
-          tfrm = Transform <$> ((\(V2 _ y) -> V2 0 (y - 14)) <$> windowSize)
+          tfrm = Transform <$> ((\(V2 _ y) -> V2 0 y) <$> windowSize)
                            <*> 1 <*> 0
           str :: MakesScene r => Vareff r a String
           str = (("Renderers: " ++) . show) <$> numRenderers
@@ -68,9 +76,26 @@ numRenderers = varM $ \_ -> do
 --          lbl :: Monad m => Var m a Label
 --          lbl = Label <$> pure mempty <*> pure "Save" <*> pure "Arial" <*> (pure $ PointSize 32) <*> 1
 
+
+instance Renderable Network where
+    nameOf _ = "Network"
+    render n@(Network ms i _) = do
+        Renderer fms _ <- getRenderer ms
+        Renderer fi _  <- getRenderer i
+        let f t = do fms $ t <> transformOf ms
+                     fi $ t <> transformOf i
+            c = putStrLn $ "Cleaning a network " ++ (show $ hash n)
+        return $ Just $ Renderer f c
+
+    renderingHashes n@(Network m i _) =
+        hash n : (renderingHashes m) ++ (renderingHashes i)
+
+    transformOf _ = mempty
+
 instance Hashable Network where
-   hashWithSalt s (Network m l) = s `hashWithSalt` m `hashWithSalt` l
+   hashWithSalt s (Network m l _) = s `hashWithSalt` m `hashWithSalt` l
 
 data Network = Network { networkMappingScreen :: MappingScreen
-                       , networkInfo :: Label
+                       , networkInfo          :: Label
+                       , networkRequests      :: [Request]
                        } deriving (Show, Eq, Typeable)

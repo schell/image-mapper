@@ -2,41 +2,14 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 module Main where
 
-import Network
-import Scene
 import Prelude hiding (sequence_)
-import Linear
-import System.Remote.Monitoring
-import System.Environment
-import System.Exit
-import Gelatin.Core.Render
-import Gelatin.Core.Color
-import Graphics.UI.GLFW
-import Graphics.GL.Core33
-import Control.Varying
-import Control.Monad
-import Control.Eff
-import Control.Eff.Lift
-import Control.Eff.Fresh
-import Control.Eff.Reader.Strict
-import Control.Eff.State.Strict
-import Control.Concurrent
-import Data.IORef
-import Data.Time.Clock
-import Data.List (isPrefixOf)
-import Data.Maybe (catMaybes)
-import Data.IORef
-import Data.Bits
-import Control.Monad.State.Strict
 
-
-data Sub = Sub { subSource :: String }
-data Pub a = Pub { pubThing :: a }
 
 main :: IO ()
 main = do
     print "push test"
 
+    {-
     True <- initGelatin
     win  <- newWindow 800 600 "Syndeca Mapper" Nothing Nothing
 
@@ -50,7 +23,6 @@ main = do
     strRef  <- newIORef []
     setCharCallback win $ Just $ \_ c -> modifyIORef charRef (const $ Just c)
 
-    {-
 
     setWindowSizeCallback win $ Just $ \_ w' h' -> input $
         WindowSizeEvent w' h'
@@ -76,7 +48,6 @@ main = do
 
     cursor <- createStandardCursor StandardCursorShape'Hand
     setCursor win cursor
-    -}
 
     t   <- getCurrentTime
     let loop = do pollEvents
@@ -106,3 +77,5 @@ main = do
                   else threadDelay 100
                   loop
     loop
+
+    -}

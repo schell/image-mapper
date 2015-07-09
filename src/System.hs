@@ -4,7 +4,7 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 module System where
 
-import Types
+import UI.Picture
 import Prelude hiding (sequence_)
 import Codec.Picture
 import Codec.Picture.Types

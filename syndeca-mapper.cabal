@@ -54,7 +54,7 @@ cabal-version:       >=1.10
 --------------------------------------------------------------------------------
 
 executable main
-  ghc-options:         -threaded -Wall
+  ghc-options:         -threaded -Wall -fprof-auto
   -- .hs or .lhs file containing the Main module.
   main-is:             Main.hs
 

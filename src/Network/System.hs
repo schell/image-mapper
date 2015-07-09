@@ -4,18 +4,20 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 module Network.System where
 
-import Types
+import Types.Internal
 import Prelude hiding (sequence_)
 import Linear
+import Graphics.Text.TrueType
 import Graphics.UI.GLFW hiding (Image(..))
 import Gelatin.Core.Triangulation.Common
-import Control.Eff
+import Control.Concurrent.Async
 import Control.Eff.Lift
 import Control.Eff.Reader.Strict
 import Control.Varying
 import Control.Varying.Time
 import Control.Eff.State.Strict
 import Control.Arrow
+import Data.Text (pack)
 
 --------------------------------------------------------------------------------
 -- Events
@@ -73,7 +75,7 @@ fileDropped = (head <$>) <$> filesDropped
 cursorStartingAt :: Monad m => (Double, Double) -> Var m InputEvent (Double, Double)
 cursorStartingAt = (cursorMoved ~>) . startingWith
 
-windowSize :: (Member (Reader Rez) r, SetMember Lift (Lift IO) r)
+windowSize :: (ReadsRez r, DoesIO r)
            => Vareff r InputEvent (V2 Float)
 windowSize = Var $ \_ -> do
     win <- rezWindow <$> ask
@@ -84,6 +86,22 @@ windowSize = Var $ \_ -> do
 
 time :: (TimeDelta r, RealFrac a) => Vareff r b a
 time = realToFrac <$> delta (unDelta <$> get) (-)
+
+systemFontCache :: (ReadsRez r, DoesIO r) => Vareff r a (Maybe FontCache)
+systemFontCache = Var $ \_ -> do
+    afc  <- rezFontCache <$> ask
+    mefc <- lift $ poll afc
+    case mefc of
+        Just (Right fc) -> return (Just fc, pure $ Just fc)
+        Just (Left _)   -> return (Nothing, pure Nothing)
+        _               -> return (Nothing, systemFontCache)
+
+systemPathForFont :: (ReadsRez r, DoesIO r)
+                  => String -> Bool -> Bool -> Vareff r a (Maybe FilePath)
+systemPathForFont f b i = systemFontCache ~> (var $ findFont f b i)
+    where findFont fam bold italic (Just fc) = findFontInCache fc $
+              FontDescriptor (pack fam) $ FontStyle bold italic
+          findFont _ _ _ _ = Nothing
 --------------------------------------------------------------------------------
 -- Helpers
 --------------------------------------------------------------------------------
@@ -93,8 +111,4 @@ infixl 0 #
 --------------------------------------------------------------------------------
 -- Types
 --------------------------------------------------------------------------------
-data ButtonState = ButtonStateOff | ButtonStateHover | ButtonStateOn
-data ButtonGraph m = ButtonGraph { buttonGraphBtn   :: Var m InputEvent Button
-                                 , buttonGraphPoly  :: Var m InputEvent Poly
-                                 , buttonGraphState :: Var m InputEvent ButtonState
-                                 }
+
