@@ -3,123 +3,93 @@
 module Types.Renderable where
 
 import Types.Internal
-import Gelatin.Core.Render
-import Control.Eff
-import Control.Eff.Lift
-import Control.Eff.State.Strict
-import Control.Eff.Reader.Strict
+import Gelatin.Core.Rendering
+import Control.Monad
 import Data.Hashable
+import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
 import GHC.Stack
 --------------------------------------------------------------------------------
 -- Other Renderables
 --------------------------------------------------------------------------------
-instance (Renderable a, Hashable a, Show a) => Renderable [a] where
-    render es = do rs <- mapM getRenderer es
-                   let f t = mapM_ (\(Renderer r _) -> r t) rs
-                   return $ Just $ Renderer f $ return ()
-    nameOf _ = "List"
-    renderingHashes a = hash a : map hash a
-    transformOf _ = mempty
-
 instance (Renderable a, Hashable a, Show a) => Renderable (Maybe a) where
-    render (Just a) = do Renderer f _ <- getRenderer a
-                         return $ Just $ Renderer f $ return ()
-    render _        = return Nothing
-    nameOf _ = "Maybe"
+    cache rz rs (Just a) = cacheByProxying (hash $ Just a) rz rs a
+    cache rz rs a        = cacheByProxying (hash a) rz rs ()
+    nameOf (Just a) = "Just " ++ nameOf a
+    nameOf _        = "Nothing"
     transformOf (Just a) = transformOf a
     transformOf _        = mempty
-    renderingHashes (Just a) = hash (Just a) : renderingHashes a
-    renderingHashes _ = []
+    children (Just a) = children a
+    children _        = []
+    hashes (Just a) = hash (Just a) : hashes a
+    hashes a        = [hash a]
 
 instance Renderable () where
-    render _ = return mempty
-    nameOf _ = "Unit"
-    renderingHashes _ = [hash ()]
+    cache _ rs () = return $ IM.insert (hash ()) mempty rs
+    nameOf _      = "()"
     transformOf _ = mempty
+    children _    = []
+    hashes _      = [hash ()]
 --------------------------------------------------------------------------------
--- Rendering ops all elements may need
+-- Cacheing helpers
 --------------------------------------------------------------------------------
-getRenderer :: (MakesScene r, Renderable a, Hashable a, Show a)
-            => a -> Eff r Renderer
-getRenderer a = do
-    let h = hash a
-    mAR <- lookupAttached h
-    case mAR of
-        Nothing -> newRenderer h a
-        Just r  -> return r
---------------------------------------------------------------------------------
--- Handling Renderers as Resources
---------------------------------------------------------------------------------
--- | Create a new renderer for an element and attaches it with the given
--- UID. If the renderer cannot be created return a no-op and attach
--- nothing.
-newRenderer :: (Renderable a, MakesScene r, Hashable a)
-            => Int -> a -> Eff r Renderer
-newRenderer i el = do
-    mr <- render el
-    r <- case mr of
-        Just r  -> attach i (nameOf el) r >> return r
-        Nothing -> return mempty
-    return r
+runRendering :: (Hashable a, Renderable a, Show a)
+             => a -> Transform -> IntMap Rendering -> IO ()
+runRendering a t = maybe (runErr a) (\(Rendering f _) -> f t) . IM.lookup (hash a)
 
-attach :: (ModifiesRenderers r, DoesIO r)
-       => Int -> String -> Renderer -> Eff r ()
-attach i s a' = do
-    lift $ putStrLn $ "Attaching " ++ show s ++ " (" ++ show i ++ ")"
-    Attached rs <- get
-    case IM.lookup i rs of
-        Nothing -> do put $ Attached $ IM.insert i a' rs
-                      modify $ \(Named ns) -> Named $ IM.insert i s ns
-        Just _  -> do mname <- lookupName i
-                      lift $ putStrLn $ unwords [ "Fatal attachment collision"
-                                                , "while attempting to insert"
-                                                , s ++ "."
-                                                , "Found renderer"
-                                                , show mname ++ "."
-                                                ]
-                      errorWithStackTrace "Aborting"
+runCleaning :: (Hashable a, Renderable a, Show a) => a -> IntMap Rendering -> IO ()
+runCleaning a = maybe (runErr a) (\(Rendering _ c) -> c) . IM.lookup (hash a)
 
-detach :: (ModifiesRenderers r, DoesIO r) => Int -> Eff r ()
-detach i = do
-    mr <- lookupAttached i
-    mn <- lookupName i
-    case mr of
-        Nothing -> do lift $ putStrLn $ unwords [ "Fatal detachment error."
-                                                , "Could not find renderer"
-                                                , show i ++ "."
-                                                ]
-                      errorWithStackTrace "Aborting"
-        Just r -> do lift $ putStrLn $ unwords [ "Detaching"
-                                               , show mn
-                                               , "( " ++ show i ++ " )"
-                                               ]
-                     modify $ \(Attached rs) -> Attached $ IM.delete i rs
-                     modify $ \(Named rs) -> Named $ IM.delete i rs
-                     (\(Renderer _ c) -> lift c) r
+runErr :: (Renderable a, Hashable a, Show a) => a -> IO ()
+runErr a = do
+    errorWithStackTrace $ unwords [ "Fatal error! Could not find rendering"
+                                  , nameOf a
+                                  , show $ hash a
+                                  , show a
+                                  ]
 
+cacheRenderings :: (Renderable a, Hashable a)
+                    => Rez -> IntMap Rendering -> a -> IO (IntMap Rendering)
+cacheRenderings rz rs a =
+    maybe (cache rz rs a) (const $ return rs) $ IM.lookup (hash a) rs
 
-lookupAttached :: (Member (State AttachedRenderers) r)
-               => Int -> Eff r (Maybe Renderer)
-lookupAttached i = (IM.lookup i . attached) <$> get
+cacheByProxying :: (Renderable a, Hashable a, Show a)
+                => Int -> Rez -> IntMap Rendering -> a -> IO (IntMap Rendering)
+cacheByProxying k rz rs a = do
+    rs' <- cacheRenderings rz rs a
+    let r   = Rendering f c
+        c   = return ()
+        f t = runRendering a t rs'
+    return $ IM.insert k r rs'
 
-lookupName :: (Member (State NamedRenderers) r) => Int -> Eff r (Maybe String)
-lookupName i = (IM.lookup i . named) <$> get
+cacheChildren :: (Renderable a, Hashable a)
+             => Rez -> IntMap Rendering -> a -> IO (IntMap Rendering)
+cacheChildren rz rs m = do
+    let f rs' a = cacheRenderings rz rs' a
+    rs' <- foldM f rs $ children m
+    return $ IM.insert (hash m) mempty rs'
+
+detach :: IntMap Rendering -> Int -> IO (IntMap Rendering)
+detach rs k = do
+    case IM.lookup k rs of
+        Nothing -> errorWithStackTrace $ "Could not find renderer for " ++ show k
+        Just (Rendering _ c) -> c
+    return $ IM.delete k rs
 --------------------------------------------------------------------------------
 -- Element
 --------------------------------------------------------------------------------
 instance Renderable Element where
-    render (Element a)          = do Renderer f _ <- getRenderer a
-                                     return $ Just $ Renderer f $ return ()
-    nameOf (Element _)          = "Element"
-    transformOf (Element a)     = transformOf a
-    renderingHashes (Element a) = hash (Element a) : renderingHashes a
+    cache rz rs e@(Element a) = cacheByProxying (hash e) rz rs a
+    nameOf (Element a)      = "Element " ++ nameOf a
+    transformOf (Element a) = transformOf a
+    children (Element a)    = children a
+    hashes (Element a)      = hash (Element a) : hashes a
 
 instance Hashable Element where
     hashWithSalt s (Element a) = s `hashWithSalt` "Element" `hashWithSalt` a
 
 instance Eq Element where
-    (Element a) == (Element b) = hash a == hash b
+    a == b = hash a == hash b
 
 instance Show Element where
     show (Element a) = "Element{ " ++ show a ++ " }"
@@ -130,14 +100,8 @@ data Element where
 -- Renderable
 --------------------------------------------------------------------------------
 class Renderable a where
-    render :: ( Member (Reader Rez) r
-              , Member (State AttachedRenderers) r
-              , Member (State NamedRenderers) r
-              , SetMember Lift (Lift IO) r
-              )
-           => a -> Eff r (Maybe Renderer)
-
-    nameOf :: a -> String
+    cache       :: Rez -> IntMap Rendering -> a -> IO (IntMap Rendering)
+    nameOf      :: a -> String
     transformOf :: a -> Transform
-
-    renderingHashes :: a -> [Int]
+    children    :: a -> [Element]
+    hashes      :: a -> [Int]

@@ -2,15 +2,22 @@
 {-# LANGUAGE Arrows #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE PartialTypeSignatures #-}
-module Network.MappingScreen (mappingScreen, MappingScreen(..), MSInfo(..)) where
+module Network.MappingScreen (
+    mappingScreen,
+    MappingScreen(..),
+    MSInfo(..),
+    mappingScreenMode,
+    MappingScreenMode(..)
+) where
 
 import Prelude hiding (until)
 import Control.Varying
 import Control.Arrow
 import Control.Eff.Lift
 import Gelatin.Core.Color
-import Gelatin.Core.Render
+import Gelatin.Core.Rendering
 import Graphics.Text.TrueType
+import Graphics.UI.GLFW
 import Linear hiding (ex)
 import Types.Internal
 import Types.Renderable
@@ -29,7 +36,9 @@ mappingScreen = MappingScreen <$> pure mempty
                               <*> mappingBG
                               <*> mask
                               <*> info
-                              <*> pure []
+
+mappingScreenMode :: Monad m => Var m a MappingScreenMode
+mappingScreenMode = pure MappingScreenModeNavigation
 --------------------------------------------------------------------------------
 -- Displayed info about the mapping screen
 --------------------------------------------------------------------------------
@@ -60,7 +69,7 @@ zoomStr :: Monad m => Var m InputEvent String
 zoomStr = (("Zoom: " ++) . show) <$> scrollScale
 
 pictureStr :: DoesIO r => Vareff r InputEvent String
-pictureStr = (("Pic: " ++) . str) <$> currentPicture
+pictureStr = (("Pic: " ++) . str) <$> droppedPicture
     where str (Just p) = picPath p
           str _ = "Nothing"
 --------------------------------------------------------------------------------
@@ -71,15 +80,34 @@ mask = mask' <$> pure mempty <*> currentPicture <*> mappingBG
     where mask' t (Just pic) bg = Just $ Mask t (Element pic) (Element bg)
           mask' _ _ _ = Nothing
 
-currentPicture :: DoesIO r => Vareff r InputEvent (Maybe Picture)
-currentPicture = tfrm <$> (Transform <$> mappingUpperLeft <*> scrollScale <*> 0)
+currentPicture :: (DoesIO r, ReadsRez r) => Vareff r InputEvent (Maybe Picture)
+currentPicture = tfrm <$> (Transform <$> currentPicturePosition
+                                     <*> scrollScale <*> 0)
                       <*> droppedPicture
     where tfrm t' (Just (Pic t p w h)) = Just $ Pic (t' <> t) p w h
           tfrm _ Nothing = Nothing
 
+currentPicturePosition :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Position
+currentPicturePosition = mappingUpperLeft + pictureOffset + pictureDragOffset
+
+pictureDragOffset :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Position
+pictureDragOffset =
+    dragging `until` fileDropped `andThenE` (once 0) `andThen` pictureDragOffset
+        where dragging = accumulate (+) 0 <~ startingWith 0 <~ mouseButtonDragged MouseButton'1
+
+pictureOffset :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Position
+pictureOffset = mappingCenter - ((check <$> pictureSizePerceived) / 2)
+    where check (Just v) = v
+          check _ = 0
+
+pictureSizePerceived :: DoesIO r => Vareff r InputEvent (Maybe Size)
+pictureSizePerceived = f <$> scrollScale <*> droppedPicture
+    where f sc (Just p) = Just $ sc * (pictureSize p)
+          f _ _ = Nothing
+
 scrollScale :: Monad m => Var m InputEvent Scale
 scrollScale =
-    (scaling `until` fileDropped `andThenE` (once (V2 1 1)) `andThen` scrollScale)
+    scaling `until` fileDropped `andThenE` (once 1) `andThen` scrollScale
         where scaling = scroll ~> accumulate accf 1
               scroll = 0 `orE` mouseScrolled
               accf acc (V2 _ y) = max 0.1 (acc + V2 y y)
@@ -96,6 +124,9 @@ mappingBG = Box <$> (Transform <$> mappingUpperLeft <*> 1 <*> 0)
 mappingSize :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Size
 mappingSize = mappingLowerRight - mappingUpperLeft
 
+mappingCenter :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Position
+mappingCenter = mappingUpperLeft + (mappingSize / 2)
+
 mappingUpperLeft :: Monad m => Var m a Position
 mappingUpperLeft = pure $ V2 10 10
 
@@ -111,26 +142,16 @@ mappingLowerRight = windowSize - (pure $ V2 10 100)
 -- Types
 --------------------------------------------------------------------------------
 instance Renderable MappingScreen where
+    cache = cacheChildren
     nameOf _ = "MappingScreen"
-    render m@(MappingScreen _ b p (MSInfo ia ib) _) = do
-        Renderer fb  _ <- getRenderer b
-        Renderer fp  _ <- getRenderer p
-        Renderer fia _ <- getRenderer ia
-        Renderer fib _ <- getRenderer ib
-        let f t = do fb  $ t <> transformOf b
-                     fp  $ t <> transformOf p
-                     fia $ t <> transformOf ia
-                     fib $ t <> transformOf ib
-            c = putStrLn $ "Cleaning a mapping screen (non-op) " ++ (show $ hash m)
-        return $ Just $ Renderer f c
-
     transformOf = mappingScreenTfrm
-
-    renderingHashes m@(MappingScreen _ b p (MSInfo ia ib) _) =
-        hash m : concatMap renderingHashes [Element b, Element p, Element ia, Element ib]
+    children (MappingScreen _ b p (MSInfo ia ib)) =
+        [Element b, Element p, Element ia, Element ib]
+    hashes m@(MappingScreen _ b p (MSInfo ia ib)) =
+        hash m : concat [hashes b, hashes p, hashes ia, hashes ib]
 
 instance Hashable MappingScreen where
-    hashWithSalt s (MappingScreen _ bg p inf _) =
+    hashWithSalt s (MappingScreen _ bg p inf) =
         s `hashWithSalt` bg `hashWithSalt` p `hashWithSalt` inf
 
 instance Hashable MSInfo where
@@ -140,8 +161,12 @@ data MappingScreen = MappingScreen { mappingScreenTfrm     :: Transform
                                    , mappingScreenBG       :: Box
                                    , mappingScreenPic      :: Maybe Mask
                                    , mappingScreenInfo     :: MSInfo
-                                   , mappingScreenRequests :: [Request]
                                    } deriving (Show, Eq, Typeable)
+
+instance Show MappingScreenMode where
+    show MappingScreenModeNavigation = "Navigation"
+
+data MappingScreenMode = MappingScreenModeNavigation deriving (Eq)
 
 data MSInfo = MSInfo { msInfoPic  :: Label
                      , msInfoZoom :: Label

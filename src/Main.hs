@@ -19,7 +19,7 @@ import Prelude hiding (sequence_, all)
 import System.Remote.Monitoring
 import System.Environment
 import System.Exit
-import Gelatin.Core.Render
+import Gelatin.Core.Rendering
 import Graphics.UI.GLFW
 import Graphics.GL.Core33
 import Control.Concurrent
@@ -32,10 +32,11 @@ import Control.Eff.Fresh
 import Control.Eff.Reader.Strict
 import Control.Eff.State.Strict
 import Data.IORef
-import Data.Time.Clock
 import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes)
 import Data.Bits
+import Data.Monoid
+import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
 import qualified Data.IntSet as S
 
@@ -115,7 +116,6 @@ startupRest win = do
         input $ FileDropEvent fs
 
     afc <- compileFontCache
-    t   <- getCurrentTime
     let rez   = Rez grs brs mrs win afc
 
     runLift $ flip runReader rez
@@ -123,34 +123,26 @@ startupRest win = do
             $ evalState (Attached mempty)
             $ evalState (Named mempty)
             -- $ evalState (Requests mempty)
-            $ evalState t
             $ step ref network
 
-step :: ( MakesScene r
-        --, StatsRenderers r
-        , Member (State UTCTime) r
-        --, Member (State Requests) r
-        )
-     => IORef [InputEvent] -> Var (Eff r) InputEvent Network -> Eff r ()
+step :: MakesScene r
+     => IORef [InputEvent] -> Var (Eff r) InputEvent Element -> Eff r ()
 step ref net = do
     -- Update input events.
     events <- lift $ readIORef ref
+    let events' = NoInputEvent : events
     lift $ writeIORef ref []
 
     -- Update running requests.
     --results <- (map $ uncurry RequestEvent) <$> updateRequests
 
-    -- Update time delta.
-    t  <- get
-    t' <- lift $ getCurrentTime
-    put t'
-    let dt = realToFrac $ t' `diffUTCTime` t
-        events' = {-results ++ -}events ++ [TimeDeltaEvent dt]
-
     -- Step the network
     (el, net') <- stepMany events' net
 
-    renderFrame [Element el]
+    rz@Rez{}    <- ask
+    Attached rs <- get
+    rs' <- lift $ renderFrame rz rs el
+    put $ Attached rs'
 
     --mapM_ insertRequest $ networkRequests el
 
@@ -182,31 +174,36 @@ stepMany (e:[]) y = runVar y e
 stepMany (e:es) y = execVar y e >>= stepMany es
 stepMany []     y = runVar y mempty
 
-renderFrame :: (MakesScene r) => [Element] -> Eff r ()
-renderFrame els = do
-    win <- rezWindow <$> ask
-    lift $ do
-        (fbw,fbh) <- getFramebufferSize win
-        glViewport 0 0 (fromIntegral fbw) (fromIntegral fbh)
-        glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT
+renderFrame :: Rez -> IntMap Rendering -> Element -> IO (IntMap Rendering)
+renderFrame rz old (Element a) = do
+    all <- cacheRenderings rz old a
 
-    rs <- mapM getRenderer els
-    mapM_ (\(Renderer r _, el) -> lift $ r $ transformOf el) $ zip rs els
+    (fbw,fbh) <- getFramebufferSize $ rezWindow rz
+    glViewport 0 0 (fromIntegral fbw) (fromIntegral fbh)
+    glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT
+    render all mempty $ Element a
 
-    lift $ do
-        pollEvents
-        swapBuffers win
-        shouldClose <- windowShouldClose win
-        if shouldClose
-        then exitSuccess
-        else threadDelay 100
+    pollEvents
+    swapBuffers $ rezWindow rz
+    shouldClose <- windowShouldClose $ rezWindow rz
+    if shouldClose
+    then exitSuccess
+    else threadDelay 100
 
     -- Detach any renderers that were not used this frame.
-    Attached all <- get
-    let hs = S.fromList $ concatMap renderingHashes els
-        ks = IM.keysSet all
-        old = S.difference ks hs
-    when (S.size old > 1) $ do
-        lift $ putStrLn ""
-        mapM_ detach $ S.toList old
-        lift $ putStrLn ""
+    let hs = S.fromList $ hashes a
+        ss = IM.keysSet all
+        ks = S.difference ss hs
+
+    --lift $ putStrLn $ "All  " ++ show ss
+    --lift $ putStrLn $ "Used " ++ show hs
+    --lift $ putStrLn $ "Old  " ++ show ks
+    foldM detach all $ S.toList ks
+    --lift $ putStrLn ""
+
+render :: IntMap Rendering -> Transform -> Element -> IO ()
+render rs t (Element a) = do
+    let t' = t <> transformOf a
+    runRendering a t' rs
+    mapM_ (render rs t') $ children a
+

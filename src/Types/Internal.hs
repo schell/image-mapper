@@ -11,7 +11,7 @@ module Types.Internal where
 import Linear
 import Graphics.UI.GLFW
 import Graphics.Text.TrueType
-import Gelatin.Core.Render
+import Gelatin.Core.Rendering
 import GHC.Generics (Generic)
 import Control.Concurrent.Async
 import Control.Varying
@@ -25,8 +25,8 @@ import Data.Hashable
 import Data.IntMap (IntMap)
 
 newtype Requests = Requests { requests :: IntMap (Async RequestResult) }
-newtype AttachedRenderers = Attached { attached :: IntMap Renderer }
-newtype NamedRenderers = Named { named :: IntMap String }
+newtype AttachedRenderings = Attached { attached :: IntMap Rendering }
+newtype NamedRenderings = Named { named :: IntMap String }
 
 data Rez = Rez { rezGeom      :: GeomRenderSource
                , rezBez       :: BezRenderSource
@@ -36,16 +36,17 @@ data Rez = Rez { rezGeom      :: GeomRenderSource
                } deriving (Typeable)
 
 type MakesScene r = ( ReadsRez r
-                    , ModifiesRenderers r
+                    , ModifiesRenderings r
                     , DoesIO r
                     )
 
 type ReadsRez r = Member (Reader Rez) r
+type ModifiesTime r = Member (State Delta) r
 type DoesIO r = SetMember Lift (Lift IO) r
 
-type ModifiesRenderers r = ( Member (State AttachedRenderers) r
-                           , Member (State NamedRenderers) r
-                           )
+type ModifiesRenderings r = ( Member (State AttachedRenderings) r
+                            , Member (State NamedRenderings) r
+                            )
 
 
 data AABB = AABB { aabbCenter   :: V2 Float
@@ -64,10 +65,11 @@ deriving instance Generic PointSize
 type Color = V4 Float
 type Size = V2 Float
 type Position = V2 Float
+type Vector = V2 Float
 type Scale = V2 Float
 type Rotation = Float
 
-newtype Delta = Delta { unDelta :: Double }
+newtype Delta = Delta { unDelta :: Double } deriving (Show)
 
 instance Monoid InputEvent where
     mempty = NoInputEvent
@@ -75,7 +77,6 @@ instance Monoid InputEvent where
     mappend e _ = e
 
 data InputEvent = NoInputEvent
-                | TimeDeltaEvent Double
                 | CharEvent Char
                 | WindowSizeEvent Int Int
                 | KeyEvent Key Int KeyState ModifierKeys

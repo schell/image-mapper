@@ -3,30 +3,28 @@ module UI.Mask where
 
 import Types.Internal
 import Types.Renderable
-import Gelatin.Core.Render
+import Gelatin.Core.Rendering
 import Graphics.UI.GLFW
-import Control.Eff.Reader.Strict
-import Control.Eff.Lift
 import Data.Hashable
 import Data.Typeable
 import GHC.Generics (Generic)
+import Data.IntMap as IM
 
 instance Renderable Mask where
     nameOf _ = "Mask"
     transformOf = maskTfrm
 
-    render m@(Mask _ a b) = do
-        lift $ putStrLn $ "Compiling a mask " ++ (show $ hash m)
-        Rez _ _ mrs w _ <- ask
-        Renderer fa _ <- getRenderer a
-        Renderer fb _ <- getRenderer b
-        Renderer f c  <- lift $ renderMask w mrs (fa $ transformOf a) (fb $ transformOf b)
-        let c' = putStrLn $ "Cleaning a mask " ++ (show $ hash m)
-        return $ Just $ Renderer f (c' >> c)
+    cache rz@(Rez _ _ mrs w _) rs m@(Mask _ a b) = do
+        putStrLn "Cacheing Mask"
+        rs'  <- cacheRenderings rz rs a
+        rs'' <- cacheRenderings rz rs' b
+        r    <- renderMask w mrs (runRendering a (transformOf a) rs'')
+                                 (runRendering b (transformOf b) rs'')
+        return $ IM.insert (hash m) r rs''
+    children _ = []
+    hashes m@(Mask _ a b) = hash m : concat [hashes a, hashes b]
 
-    renderingHashes m@(Mask _ a b) = hash m : concatMap renderingHashes [a, b]
-
-renderMask :: Window -> MaskRenderSource -> IO () -> IO () -> IO Renderer
+renderMask :: Window -> MaskRenderSource -> IO () -> IO () -> IO Rendering
 renderMask = alphaMask
 
 instance Hashable Mask where

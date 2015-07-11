@@ -22,12 +22,12 @@ data ButtonGraph m = ButtonGraph { buttonGraphBtn   :: Var m InputEvent Button
 instance Renderable Button where
     nameOf _ = "Button"
     render btn@(Button _ box label) = do
-        b <- getRenderer box
-        l <- getRenderer label
+        b <- getRendering box
+        l <- getRendering label
         let f t = do rRender b (t <> transformOf box)
                      rRender l (t <> transformOf label)
             c = putStrLn $ "Cleaning a button " ++ (show $ hash btn)
-        return $ Just $ Renderer f c
+        return $ Just $ Rendering f c
 
     transformOf = buttonTransform
 

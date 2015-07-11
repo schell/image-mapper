@@ -15,8 +15,8 @@ import Control.Eff.Lift
 import Control.Eff.Reader.Strict
 import Control.Varying
 import Control.Varying.Time
-import Control.Eff.State.Strict
 import Control.Arrow
+import Data.Time.Clock
 import Data.Text (pack)
 
 --------------------------------------------------------------------------------
@@ -32,15 +32,26 @@ windowResized = arr check ~> onJust
     where check (WindowSizeEvent w h) = Just (w,h)
           check _ = Nothing
 
-cursorMoved :: Monad m => Var m InputEvent (Event (Double, Double))
+mouseButtonDragged :: Monad m => MouseButton -> Var m InputEvent (Event Vector)
+mouseButtonDragged btn =
+    latchWith (-) dragPos $ takeE 1 dragPos `andThenE` delay 0 dragPos
+    where dragPos  = latchWith const cursorMoved dragging
+          dragging = between down up
+          down     = mouseButtonPressed btn
+          up       = mouseButtonReleased btn
+
+cursorMoved :: Monad m => Var m InputEvent (Event Position)
 cursorMoved = arr check ~> onJust
-    where check (CursorMoveEvent x y) = Just (x,y)
+    where check (CursorMoveEvent x y) = Just $ realToFrac <$> V2 x y
           check _ = Nothing
 
-mouseAction :: Monad m => Var m InputEvent (Event (MouseButton, MouseButtonState, ModifierKeys))
-mouseAction = arr check ~> onJust
-    where check (MouseButtonEvent mb mbs mks) = Just (mb,mbs,mks)
-          check _ = Nothing
+mouseButtonPressed :: Monad m => MouseButton -> Var m InputEvent (Event Position)
+mouseButtonPressed btn = latchWith const cursorMoved (filterE check mouseDown)
+    where check = (== btn) . fst
+
+mouseButtonReleased :: Monad m => MouseButton -> Var m InputEvent (Event Position)
+mouseButtonReleased btn = latchWith const cursorMoved (filterE check mouseUp)
+    where check = (== btn) . fst
 
 mouseDown :: Monad m => Var m InputEvent (Event (MouseButton, ModifierKeys))
 mouseDown = mouseAction ~> arr (check . toMaybe) ~> onJust
@@ -52,15 +63,16 @@ mouseUp = mouseAction ~> arr (check . toMaybe) ~> onJust
     where check (Just (mb, MouseButtonState'Released, mks)) = Just (mb, mks)
           check _ = Nothing
 
-mb1Press :: Monad m => Var m InputEvent (Event (Double, Double))
-mb1Press = latchWith const cursorMoved mouseDown
+mouseAction :: Monad m => Var m InputEvent (Event (MouseButton, MouseButtonState, ModifierKeys))
+mouseAction = arr check ~> onJust
+    where check (MouseButtonEvent mb mbs mks) = Just (mb,mbs,mks)
+          check _ = Nothing
 
 cursorInside :: Monad m => Var m InputEvent Poly -> Var m InputEvent (Event ())
 cursorInside vpoly = proc e -> do
-    poly    <- vpoly -< e
-    (mx,my) <- cursorStartingAt (0, 0) -< e
-    let [mx', my'] = map realToFrac [mx,my]
-    onTrue -< pointInside (V2 mx' my') poly
+    poly <- vpoly -< e
+    pos  <- cursorStartingAt 0 -< e
+    onTrue -< pointInside pos poly
 
 filesDropped :: Monad m => Var m InputEvent (Event [String])
 filesDropped = arr check ~> onJust
@@ -72,7 +84,7 @@ fileDropped = (head <$>) <$> filesDropped
 --------------------------------------------------------------------------------
 -- Continuous Streams
 --------------------------------------------------------------------------------
-cursorStartingAt :: Monad m => (Double, Double) -> Var m InputEvent (Double, Double)
+cursorStartingAt :: Monad m => Position -> Var m InputEvent Position
 cursorStartingAt = (cursorMoved ~>) . startingWith
 
 windowSize :: (ReadsRez r, DoesIO r)
@@ -84,8 +96,13 @@ windowSize = Var $ \_ -> do
         resized = (fmap realToFrac . uncurry V2 <$>) <$> windowResized
     return (v, resized ~> startingWith v)
 
-time :: (TimeDelta r, RealFrac a) => Vareff r b a
-time = realToFrac <$> delta (unDelta <$> get) (-)
+--time :: (TimeDelta r, RealFrac b) => Vareff r a b
+--time = Var $ \_ -> do
+--   Delta dt <- get
+--   return (realToFrac dt, time)
+
+time :: (DoesIO r, RealFrac b) => Vareff r a b
+time = delta (lift $ getCurrentTime) (\a b -> realToFrac $ diffUTCTime a b)
 
 systemFontCache :: (ReadsRez r, DoesIO r) => Vareff r a (Maybe FontCache)
 systemFontCache = Var $ \_ -> do
