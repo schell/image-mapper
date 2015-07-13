@@ -32,7 +32,7 @@ network = Element <$>
              <*> debugInfo)
     where tfrm m = m{ mappingScreenTfrm = Transform (V2 0 16) 1 0 }
 
-breadCrumb :: (ReadsRez r, DoesIO r) => Vareff r a Label
+breadCrumb :: (ReadsRez r, DoesIO r) => Vareff r InputEvent Label
 breadCrumb = Label <$> (pure $ Transform (V2 10 26) 1 0)
                    <*> (intercalate " > " <$> strs)
                    <*> systemPathForFont "Arial" True False
@@ -43,8 +43,8 @@ breadCrumb = Label <$> (pure $ Transform (V2 10 26) 1 0)
 networkMode :: Monad m => Var m a NetworkMode
 networkMode = pure NetworkModeMappingScreen
 
-subModeStrings :: Monad m => Var m a [String]
-subModeStrings = pure [show MappingScreenModeNavigation]
+subModeStrings :: Monad m => Var m InputEvent [String]
+subModeStrings = sequenceA [show <$> mappingScreenMode]
 
 debugInfo :: (Member (State AttachedRenderings) r, DoesIO r, ReadsRez r)
           => Vareff r InputEvent Label

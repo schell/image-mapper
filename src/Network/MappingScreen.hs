@@ -12,6 +12,7 @@ module Network.MappingScreen (
 
 import Prelude hiding (until)
 import Control.Varying
+import Control.Monad
 import Control.Arrow
 import Control.Eff.Lift
 import Gelatin.Core.Color
@@ -30,6 +31,7 @@ import Network.System
 import Data.Hashable
 import Data.Monoid
 import Data.Typeable
+import Data.List
 
 mappingScreen :: (DoesIO r, ReadsRez r) => Vareff r InputEvent MappingScreen
 mappingScreen = MappingScreen <$> pure mempty
@@ -37,8 +39,6 @@ mappingScreen = MappingScreen <$> pure mempty
                               <*> mask
                               <*> info
 
-mappingScreenMode :: Monad m => Var m a MappingScreenMode
-mappingScreenMode = pure MappingScreenModeNavigation
 --------------------------------------------------------------------------------
 -- Displayed info about the mapping screen
 --------------------------------------------------------------------------------
@@ -66,7 +66,7 @@ zoomPos :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Position
 zoomPos = mappingLowerLeft + (pure $ V2 0 12)
 
 zoomStr :: Monad m => Var m InputEvent String
-zoomStr = (("Zoom: " ++) . show) <$> scrollScale
+zoomStr = (("Zoom: " ++) . show) <$> pictureScale
 
 pictureStr :: DoesIO r => Vareff r InputEvent String
 pictureStr = (("Pic: " ++) . str) <$> droppedPicture
@@ -81,19 +81,21 @@ mask = mask' <$> pure mempty <*> currentPicture <*> mappingBG
           mask' _ _ _ = Nothing
 
 currentPicture :: (DoesIO r, ReadsRez r) => Vareff r InputEvent (Maybe Picture)
-currentPicture = tfrm <$> (Transform <$> currentPicturePosition
-                                     <*> scrollScale <*> 0)
+currentPicture = tfrm <$> (Transform <$> navigationModePicturePosition
+                                     <*> pictureScale <*> 0)
                       <*> droppedPicture
     where tfrm t' (Just (Pic t p w h)) = Just $ Pic (t' <> t) p w h
           tfrm _ Nothing = Nothing
 
-currentPicturePosition :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Position
-currentPicturePosition = mappingUpperLeft + pictureOffset + pictureDragOffset
+navigationModePicturePosition :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Position
+navigationModePicturePosition = mappingUpperLeft + pictureOffset + pictureDragOffset
 
 pictureDragOffset :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Position
 pictureDragOffset =
     dragging `until` fileDropped `andThenE` (once 0) `andThen` pictureDragOffset
-        where dragging = accumulate (+) 0 <~ startingWith 0 <~ mouseButtonDragged MouseButton'1
+        where dragging = accumulate (+) 0 <~ startingWith 0 <~ navDragging
+              navDragging = combineWith (flip const) inNavigationMode
+                                                     (mouseButtonDragged MouseButton'1)
 
 pictureOffset :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Position
 pictureOffset = mappingCenter - ((check <$> pictureSizePerceived) / 2)
@@ -101,19 +103,20 @@ pictureOffset = mappingCenter - ((check <$> pictureSizePerceived) / 2)
           check _ = 0
 
 pictureSizePerceived :: DoesIO r => Vareff r InputEvent (Maybe Size)
-pictureSizePerceived = f <$> scrollScale <*> droppedPicture
+pictureSizePerceived = f <$> pictureScale <*> droppedPicture
     where f sc (Just p) = Just $ sc * (pictureSize p)
           f _ _ = Nothing
 
-scrollScale :: Monad m => Var m InputEvent Scale
-scrollScale =
-    scaling `until` fileDropped `andThenE` (once 1) `andThen` scrollScale
+pictureScale :: Monad m => Var m InputEvent Scale
+pictureScale =
+    scaling `until` fileDropped `andThenE` (once 1) `andThen` pictureScale
         where scaling = scroll ~> accumulate accf 1
               scroll = 0 `orE` mouseScrolled
               accf acc (V2 _ y) = max 0.1 (acc + V2 y y)
 
 droppedPicture :: DoesIO r => Vareff r InputEvent (Maybe Picture)
 droppedPicture = startingWith Nothing <~ tagM (lift . loadPicture) fileDropped
+
 --------------------------------------------------------------------------------
 -- The mapping area
 --------------------------------------------------------------------------------
@@ -138,6 +141,34 @@ mappingLowerLeft = proc e -> do
 
 mappingLowerRight :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Position
 mappingLowerRight = windowSize - (pure $ V2 10 100)
+--------------------------------------------------------------------------------
+-- Modes
+--------------------------------------------------------------------------------
+inNavigationMode :: Monad m => Var m InputEvent (Event ())
+inNavigationMode = use () mode
+    where mode = mappingScreenMode ~> onWhen (== MappingScreenModeNavigation)
+
+mappingScreenMode :: Monad m => Var m InputEvent MappingScreenMode
+mappingScreenMode = toEnum <$> triggeredMode
+    where triggeredMode = triggers ~> triggeredIndex ~> startingWith 0
+
+triggers :: Monad m => Var m InputEvent [Event ()]
+triggers = sequenceA [triggerDefault, triggerNav, triggerHitAreas, triggerProducts]
+
+triggeredIndex :: (Monad m) => Var m [Event ()] (Event Int)
+triggeredIndex = (var (elemIndex $ Event ())) ~> onJust
+
+triggerDefault :: Monad m => Var m InputEvent (Event ())
+triggerDefault = use () fileDropped
+
+triggerNav :: Monad m => Var m InputEvent (Event ())
+triggerNav = var (== CharEvent 'n') ~> onTrue
+
+triggerHitAreas :: Monad m => Var m InputEvent (Event ())
+triggerHitAreas = var (== CharEvent 'h') ~> onTrue
+
+triggerProducts :: Monad m => Var m InputEvent (Event ())
+triggerProducts = var (== CharEvent 'p') ~> onTrue
 --------------------------------------------------------------------------------
 -- Types
 --------------------------------------------------------------------------------
@@ -164,9 +195,16 @@ data MappingScreen = MappingScreen { mappingScreenTfrm     :: Transform
                                    } deriving (Show, Eq, Typeable)
 
 instance Show MappingScreenMode where
+    show MappingScreenModeDefault = "Default"
     show MappingScreenModeNavigation = "Navigation"
+    show MappingScreenModeHitArea = "Hit Areas"
+    show MappingScreenModeProducts = "Products"
 
-data MappingScreenMode = MappingScreenModeNavigation deriving (Eq)
+data MappingScreenMode = MappingScreenModeDefault
+                       | MappingScreenModeNavigation
+                       | MappingScreenModeHitArea
+                       | MappingScreenModeProducts
+                       deriving (Eq, Enum)
 
 data MSInfo = MSInfo { msInfoPic  :: Label
                      , msInfoZoom :: Label
