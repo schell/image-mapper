@@ -12,7 +12,6 @@ module Network.MappingScreen (
 
 import Prelude hiding (until)
 import Control.Varying
-import Control.Monad
 import Control.Arrow
 import Control.Eff.Lift
 import Gelatin.Core.Color
@@ -38,12 +37,19 @@ mappingScreen = MappingScreen <$> pure mempty
                               <*> mappingBG
                               <*> mask
                               <*> info
-
 --------------------------------------------------------------------------------
 -- Displayed info about the mapping screen
 --------------------------------------------------------------------------------
 info :: (DoesIO r, ReadsRez r) => Vareff r InputEvent MSInfo
-info = MSInfo <$> infoLabelPic <*> infoLabelZoom
+info = MSInfo <$> infoLabelPic <*> infoLabelZoom <*> infoLabelTrans
+
+infoLabelTrans :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Label
+infoLabelTrans =
+    Label <$> (Transform <$> transPos <*> 1 <*> 0)
+          <*> transStr
+          <*> systemPathForFont "Arial" False False
+          <*> pure (PointSize 12)
+          <*> pure white
 
 infoLabelZoom :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Label
 infoLabelZoom =
@@ -62,24 +68,37 @@ infoLabelPic =
           <*> pure (PointSize 12)
           <*> pure white
 
+transPos :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Position
+transPos = mappingLowerLeft + (pure $ V2 0 12)
+
+transStr :: (DoesIO r, ReadsRez r) => Vareff r InputEvent String
+transStr = (++) <$> offset <*> absolute
+    where absolute,offset :: (DoesIO r, ReadsRez r) => Vareff r InputEvent String
+          absolute = ((\s -> " (" ++ s ++ ")") . stringify) <$> navigationModePicturePosition
+          offset = stringify <$> pictureDragOffset
+          stringify (V2 x y) = concat ["x: ", show x, ", y: ", show y]
+
 zoomPos :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Position
-zoomPos = mappingLowerLeft + (pure $ V2 0 12)
+zoomPos = transPos + (pure $ V2 0 14)
 
 zoomStr :: Monad m => Var m InputEvent String
-zoomStr = (("Zoom: " ++) . show) <$> pictureScale
+zoomStr = (("Zoom: " ++) . show) <$> ((\(V2 x _) -> x) <$> pictureScale)
 
 pictureStr :: DoesIO r => Vareff r InputEvent String
 pictureStr = (("Pic: " ++) . str) <$> droppedPicture
     where str (Just p) = picPath p
           str _ = "Nothing"
+
+--------------------------------------------------------------------------------
+-- The mask that includes the current picture and hitareas
+--------------------------------------------------------------------------------
+mask :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Mask
+mask = Mask <$> pure mempty <*> (Element <$> els) <*> (Element <$> mappingBG)
+    where els :: (DoesIO r, ReadsRez r) => Vareff r InputEvent [Element]
+          els = sequenceA [Element <$> currentPicture]
 --------------------------------------------------------------------------------
 -- The picture the user is mapping
 --------------------------------------------------------------------------------
-mask :: (DoesIO r, ReadsRez r) => Vareff r InputEvent (Maybe Mask)
-mask = mask' <$> pure mempty <*> currentPicture <*> mappingBG
-    where mask' t (Just pic) bg = Just $ Mask t (Element pic) (Element bg)
-          mask' _ _ _ = Nothing
-
 currentPicture :: (DoesIO r, ReadsRez r) => Vareff r InputEvent (Maybe Picture)
 currentPicture = tfrm <$> (Transform <$> navigationModePicturePosition
                                      <*> pictureScale <*> 0)
@@ -116,7 +135,6 @@ pictureScale =
 
 droppedPicture :: DoesIO r => Vareff r InputEvent (Maybe Picture)
 droppedPicture = startingWith Nothing <~ tagM (lift . loadPicture) fileDropped
-
 --------------------------------------------------------------------------------
 -- The mapping area
 --------------------------------------------------------------------------------
@@ -176,21 +194,22 @@ instance Renderable MappingScreen where
     cache = cacheChildren
     nameOf _ = "MappingScreen"
     transformOf = mappingScreenTfrm
-    children (MappingScreen _ b p (MSInfo ia ib)) =
-        [Element b, Element p, Element ia, Element ib]
-    hashes m@(MappingScreen _ b p (MSInfo ia ib)) =
-        hash m : concat [hashes b, hashes p, hashes ia, hashes ib]
+    children (MappingScreen _ b p (MSInfo ia ib ic)) =
+        [Element b, Element p, Element ia, Element ib, Element ic]
+    hashes m@(MappingScreen _ b p (MSInfo ia ib ic)) =
+        hash m : concat [hashes b, hashes p, hashes ia, hashes ib, hashes ic]
 
 instance Hashable MappingScreen where
     hashWithSalt s (MappingScreen _ bg p inf) =
         s `hashWithSalt` bg `hashWithSalt` p `hashWithSalt` inf
 
 instance Hashable MSInfo where
-    hashWithSalt s (MSInfo a b) = s `hashWithSalt` a `hashWithSalt` b
+    hashWithSalt s (MSInfo a b c) =
+        s `hashWithSalt` a `hashWithSalt` b `hashWithSalt` c
 
 data MappingScreen = MappingScreen { mappingScreenTfrm     :: Transform
                                    , mappingScreenBG       :: Box
-                                   , mappingScreenPic      :: Maybe Mask
+                                   , mappingScreenPic      :: Mask
                                    , mappingScreenInfo     :: MSInfo
                                    } deriving (Show, Eq, Typeable)
 
@@ -208,4 +227,5 @@ data MappingScreenMode = MappingScreenModeDefault
 
 data MSInfo = MSInfo { msInfoPic  :: Label
                      , msInfoZoom :: Label
+                     , msInfoTrans:: Label
                      } deriving (Show, Eq, Typeable)

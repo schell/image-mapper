@@ -29,7 +29,7 @@ instance Renderable Picture where
         Rendering geomf c <- textureRendering win grs GL_TRIANGLES vs gs
         rs' <- cacheRenderings rz rs pt
 
-        let f' t = runRendering pt t rs' >> geomf t
+        let f' t = runRendering pt t rs' >> geomf t >> (putStrLn $ "Rendered a pic at " ++ show t)
             c'   = (putStrLn $ "Cleaning a picture") >> c
             r    = Rendering f' c'
 

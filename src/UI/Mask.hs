@@ -29,9 +29,10 @@ renderMask = alphaMask
 
 instance Hashable Mask where
     hashWithSalt s (Mask _ mn msk) =
-        s `hashWithSalt` (tmn, mn) `hashWithSalt` (tmsk, msk)
-            where tmn = transformOf mn
-                  tmsk = transformOf msk
+        s `hashWithSalt` ts `hashWithSalt` mn `hashWithSalt` msk
+            -- A mask must also update whenever the transform of an inner
+            -- element updates.
+            where ts = allChildTransforms mn ++ allChildTransforms msk
 
 data Mask = Mask { maskTfrm :: Transform
                  , maskMain :: Element

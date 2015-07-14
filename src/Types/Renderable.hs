@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 module Types.Renderable where
 
 import Types.Internal
@@ -23,6 +24,17 @@ instance (Renderable a, Hashable a, Show a) => Renderable (Maybe a) where
     children _        = []
     hashes (Just a) = hash (Just a) : hashes a
     hashes a        = [hash a]
+
+instance Renderable [Element] where
+    cache rz rs as = cacheChildren rz rs as {-do rs' <- foldM (cacheRenderings rz) rs as
+                        let r t = mapM_ (\a -> runRendering a (t `mappend` transformOf a) rs') as
+                            rnd' = Rendering r $ return ()
+                            rnd = (Rendering (\t -> putStrLn $ "Rendering " ++ nameOf as ++ " at " ++ show t) (return ()))
+                        return $ IM.insert (hash as) (rnd `mappend` rnd') rs'-}
+    nameOf as = "List[ " ++ (unwords $ map nameOf as) ++ " ]"
+    transformOf _ = mempty
+    children = id
+    hashes as = hash as : (concatMap hashes as)
 
 instance Renderable () where
     cache _ rs () = return $ IM.insert (hash ()) mempty rs
@@ -75,11 +87,14 @@ detach rs k = do
         Nothing -> errorWithStackTrace $ "Could not find renderer for " ++ show k
         Just (Rendering _ c) -> c
     return $ IM.delete k rs
+
+allChildTransforms :: Renderable a => a -> [Transform]
+allChildTransforms a = (transformOf a) : (concatMap allChildTransforms $ children a)
 --------------------------------------------------------------------------------
 -- Element
 --------------------------------------------------------------------------------
 instance Renderable Element where
-    cache rz rs e@(Element a) = cacheByProxying (hash e) rz rs a
+    cacheOf rz rs e@(Element a) = cacheChildren rz rs e--cacheByProxying (hash e) rz rs a
     nameOf (Element a)      = "Element " ++ nameOf a
     transformOf (Element a) = transformOf a
     children (Element a)    = children a
@@ -100,8 +115,9 @@ data Element where
 -- Renderable
 --------------------------------------------------------------------------------
 class Renderable a where
-    cache       :: Rez -> IntMap Rendering -> a -> IO (IntMap Rendering)
-    nameOf      :: a -> String
-    transformOf :: a -> Transform
-    children    :: a -> [Element]
-    hashes      :: a -> [Int]
+    cacheOf       :: Rez -> IntMap Rendering -> a -> IO (IntMap Rendering)
+    nameOf        :: a -> String
+    renderLayerOf :: a -> [(Int,Transform)]
+    --transformOf :: a -> Transform
+    --children    :: a -> [Element]
+    --hashes      :: a -> [Int]
