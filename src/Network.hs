@@ -16,6 +16,7 @@ import Network.System
 import Gelatin.Core.Rendering
 import Gelatin.Core.Color
 import Graphics.Text.TrueType
+import Control.Monad
 import Control.Varying
 import Control.Eff
 import Control.Eff.State.Strict
@@ -103,21 +104,20 @@ numRenderings = varM $ \_ -> do
 
 
 instance Renderable Network where
+    cache rz rs (Network m bc i) = foldM (cacheIfNeeded rz) rs [ Element m
+                                                                 , Element bc
+                                                                 , Element i
+                                                                 ]
+    renderLayerOf (Network m bc i) = concat [renderLayerOf m
+                                            ,renderLayerOf bc
+                                            ,renderLayerOf i
+                                            ]
     nameOf _ = "Network"
-    children (Network m bc i) = [Element m, Element i, Element $ shadow bc, Element bc]
-    cache = cacheChildren
-    hashes n@(Network m bc i) = hash n : concat [ hashes bc
-                                                , hashes $ shadow bc
-                                                , hashes m
-                                                , hashes i
-                                                ]
-
-    transformOf _ = mempty
 
 
-shadow bc = bc{ labelTransform = translate 0 1 $ labelTransform bc
-              , labelColor = black `alpha` 0.5
-              }
+--shadow bc = bc{ labelTransform = translate 0 1 $ labelTransform bc
+--              , labelColor = black `alpha` 0.5
+--              }
 
 instance Hashable Network where
    hashWithSalt s (Network m bc l) =

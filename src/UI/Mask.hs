@@ -12,27 +12,25 @@ import Data.IntMap as IM
 
 instance Renderable Mask where
     nameOf _ = "Mask"
-    transformOf = maskTfrm
-
     cache rz@(Rez _ _ mrs w _) rs m@(Mask _ a b) = do
         putStrLn "Cacheing Mask"
-        rs'  <- cacheRenderings rz rs a
-        rs'' <- cacheRenderings rz rs' b
-        r    <- renderMask w mrs (runRendering a (transformOf a) rs'')
-                                 (runRendering b (transformOf b) rs'')
+        rs'    <- cacheIfNeeded rz rs a
+        rs''   <- cacheIfNeeded rz rs' b
+        let layerA = renderLayerOf a
+            layerB = renderLayerOf b
+        r      <- renderMask w mrs (runLayer layerA rs'' mempty)
+                                   (runLayer layerB rs'' mempty)
         return $ IM.insert (hash m) r rs''
-    children _ = []
-    hashes m@(Mask _ a b) = hash m : concat [hashes a, hashes b]
+    renderLayerOf m = [(hash m, maskTfrm m)]
 
 renderMask :: Window -> MaskRenderSource -> IO () -> IO () -> IO Rendering
 renderMask = alphaMask
 
 instance Hashable Mask where
-    hashWithSalt s (Mask _ mn msk) =
-        s `hashWithSalt` ts `hashWithSalt` mn `hashWithSalt` msk
-            -- A mask must also update whenever the transform of an inner
-            -- element updates.
-            where ts = allChildTransforms mn ++ allChildTransforms msk
+    hashWithSalt s (Mask _ mn msk) = s `hashWithSalt` layer
+            -- A mask must re-cache its rendering whenever any part of its
+            -- elements' render layers change.
+            where layer = concatMap renderLayerOf [mn,msk]
 
 data Mask = Mask { maskTfrm :: Transform
                  , maskMain :: Element

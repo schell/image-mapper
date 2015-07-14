@@ -16,7 +16,7 @@ instance Renderable Label where
     nameOf _ = "Label"
     -- | TODO: Include one font so we have some default text rendering
     -- immediately.
-    cache _ rs l@(Label _ _ Nothing _ _) = return $ IM.insert (hash l) mempty rs
+    cache _ rs (Label _ _ Nothing _ _) = return rs
     cache (Rez grs brs _ w _) rs l@(Label _ str (Just fp) ps fc) = do
         putStrLn $ "Cacheing Label"
         eFont <- loadFontFile fp
@@ -30,9 +30,8 @@ instance Renderable Label where
                 let c' = putStrLn $ "Cleaning a label '" ++ str ++ "'"
                     r  = Rendering f (c' >> c)
                 return $ IM.insert (hash l) r rs
-    transformOf = labelTransform
-    children _  = []
-    hashes l = [hash l]
+    renderLayerOf (Label _ _ Nothing _ _) = []
+    renderLayerOf l = [(hash l, labelTransform l)]
 
 instance Hashable PointSize
 

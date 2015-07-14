@@ -175,13 +175,16 @@ stepMany (e:es) y = execVar y e >>= stepMany es
 stepMany []     y = runVar y mempty
 
 renderFrame :: Rez -> IntMap Rendering -> Element -> IO (IntMap Rendering)
-renderFrame rz old (Element a) = do
-    all <- cacheRenderings rz old a
+renderFrame rz old a = do
+    all <- cacheIfNeeded rz old a
 
     (fbw,fbh) <- getFramebufferSize $ rezWindow rz
     glViewport 0 0 (fromIntegral fbw) (fromIntegral fbh)
     glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT
-    render all mempty $ Element a
+
+    -- Render the flattened layer (a composite of all sub-layers)
+    let layer = renderLayerOf a
+    runLayer layer all mempty
 
     pollEvents
     swapBuffers $ rezWindow rz
@@ -191,19 +194,16 @@ renderFrame rz old (Element a) = do
     else threadDelay 100
 
     -- Detach any renderers that were not used this frame.
-    let hs = S.fromList $ hashes a
+    let hs = S.fromList $ map fst $ renderLayerOf a
         ss = IM.keysSet all
         ks = S.difference ss hs
 
-    --lift $ putStrLn $ "All  " ++ show ss
-    --lift $ putStrLn $ "Used " ++ show hs
-    --lift $ putStrLn $ "Old  " ++ show ks
+    --putStrLn $ "All  " ++ show ss
+    --putStrLn $ "Used " ++ show hs
+    --putStrLn $ "Old  " ++ show ks
     foldM detach all $ S.toList ks
-    --lift $ putStrLn ""
 
-render :: IntMap Rendering -> Transform -> Element -> IO ()
-render rs t (Element a) = do
-    let t' = t <> transformOf a
-    runRendering a t' rs
-    mapM_ (render rs t') $ children a
-
+render :: Element -> IntMap Rendering -> IO ()
+render (Element a) rs = do
+    let layer = renderLayerOf a
+    runLayer layer rs mempty

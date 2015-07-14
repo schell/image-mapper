@@ -5,12 +5,12 @@
 module Network.MappingScreen (
     mappingScreen,
     MappingScreen(..),
-    MSInfo(..),
     mappingScreenMode,
     MappingScreenMode(..)
 ) where
 
 import Prelude hiding (until)
+import Control.Monad
 import Control.Varying
 import Control.Arrow
 import Control.Eff.Lift
@@ -40,8 +40,8 @@ mappingScreen = MappingScreen <$> pure mempty
 --------------------------------------------------------------------------------
 -- Displayed info about the mapping screen
 --------------------------------------------------------------------------------
-info :: (DoesIO r, ReadsRez r) => Vareff r InputEvent MSInfo
-info = MSInfo <$> infoLabelPic <*> infoLabelZoom <*> infoLabelTrans
+info :: (DoesIO r, ReadsRez r) => Vareff r InputEvent [Label]
+info = sequenceA [infoLabelPic, infoLabelZoom, infoLabelTrans]
 
 infoLabelTrans :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Label
 infoLabelTrans =
@@ -191,26 +191,26 @@ triggerProducts = var (== CharEvent 'p') ~> onTrue
 -- Types
 --------------------------------------------------------------------------------
 instance Renderable MappingScreen where
-    cache = cacheChildren
+    cache rz rs (MappingScreen _ bg p i) = foldM (cacheIfNeeded rz) rs
+                                                 [ Element bg
+                                                 , Element p
+                                                 , Element i
+                                                 ]
     nameOf _ = "MappingScreen"
-    transformOf = mappingScreenTfrm
-    children (MappingScreen _ b p (MSInfo ia ib ic)) =
-        [Element b, Element p, Element ia, Element ib, Element ic]
-    hashes m@(MappingScreen _ b p (MSInfo ia ib ic)) =
-        hash m : concat [hashes b, hashes p, hashes ia, hashes ib, hashes ic]
+    renderLayerOf (MappingScreen t bg p i) = map ((t <>) <$>) layer
+        where layer = concatMap renderLayerOf [ Element bg
+                                              , Element p
+                                              , Element i
+                                              ]
 
 instance Hashable MappingScreen where
     hashWithSalt s (MappingScreen _ bg p inf) =
         s `hashWithSalt` bg `hashWithSalt` p `hashWithSalt` inf
 
-instance Hashable MSInfo where
-    hashWithSalt s (MSInfo a b c) =
-        s `hashWithSalt` a `hashWithSalt` b `hashWithSalt` c
-
 data MappingScreen = MappingScreen { mappingScreenTfrm     :: Transform
                                    , mappingScreenBG       :: Box
                                    , mappingScreenPic      :: Mask
-                                   , mappingScreenInfo     :: MSInfo
+                                   , mappingScreenInfo     :: [Label]
                                    } deriving (Show, Eq, Typeable)
 
 instance Show MappingScreenMode where
@@ -224,8 +224,3 @@ data MappingScreenMode = MappingScreenModeDefault
                        | MappingScreenModeHitArea
                        | MappingScreenModeProducts
                        deriving (Eq, Enum)
-
-data MSInfo = MSInfo { msInfoPic  :: Label
-                     , msInfoZoom :: Label
-                     , msInfoTrans:: Label
-                     } deriving (Show, Eq, Typeable)

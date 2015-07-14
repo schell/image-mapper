@@ -27,17 +27,15 @@ instance Renderable Picture where
             gs = map (/ V2 w h) vs
 
         Rendering geomf c <- textureRendering win grs GL_TRIANGLES vs gs
-        rs' <- cacheRenderings rz rs pt
+        rs' <- cacheIfNeeded rz rs pt
 
-        let f' t = runRendering pt t rs' >> geomf t >> (putStrLn $ "Rendered a pic at " ++ show t)
+        let texLayer = renderLayerOf pt
+            f' t = runLayer texLayer rs' t >> geomf t
             c'   = (putStrLn $ "Cleaning a picture") >> c
             r    = Rendering f' c'
 
         return $ IM.insert (hash p) r rs'
-
-    transformOf = picTransform
-    children _ = []
-    hashes p = hash p : (hashes $ pictureTex p)
+    renderLayerOf p = renderLayerOf (pictureTex p) ++ [(hash p, picTransform p)]
 
 pictureTex :: Picture -> Texture
 pictureTex (Pic _ p _ _) = Tex p GL_TEXTURE0

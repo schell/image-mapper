@@ -26,9 +26,7 @@ instance Renderable Texture where
                                c = do putStrLn $ "Deleting tex for " ++ path
                                       withArray [t] $ glDeleteTextures 1
                            return $ IM.insert (hash tex) (Rendering f c) rs
-    transformOf _ = mempty
-    children _ = []
-    hashes t = [hash t]
+    renderLayerOf t = [(hash t, mempty)]
 
 instance Hashable Texture
 
