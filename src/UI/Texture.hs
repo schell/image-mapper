@@ -21,12 +21,17 @@ instance Renderable Texture where
             Left err -> putStrLn err >> return mempty
             Right i  -> do t <- do putStrLn $ "Creating tex for " ++ path
                                    loadTextureUnit (Just u) i
-                           let f _ = do glActiveTexture u
-                                        glBindTexture GL_TEXTURE_2D t
-                               c = do putStrLn $ "Deleting tex for " ++ path
-                                      withArray [t] $ glDeleteTextures 1
+                           let f = const $ renderTexture u t
+                               c = cleanTexture t
                            return $ IM.insert (hash tex) (Rendering f c) rs
-    renderLayerOf t = [(hash t, mempty)]
+    renderLayerOf t = [(hash t, Just mempty)]
+
+renderTexture :: GLenum -> GLuint -> IO ()
+renderTexture u t = do glActiveTexture u
+                       glBindTexture GL_TEXTURE_2D t
+
+cleanTexture :: GLuint -> IO ()
+cleanTexture t = withArray [t] $ glDeleteTextures 1
 
 instance Hashable Texture
 

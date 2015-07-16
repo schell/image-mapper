@@ -8,7 +8,7 @@ import Graphics.UI.GLFW
 import Data.Hashable
 import Data.Typeable
 import GHC.Generics (Generic)
-import Data.IntMap as IM
+import qualified Data.IntMap as IM
 
 instance Renderable Mask where
     nameOf _ = "Mask"
@@ -18,10 +18,14 @@ instance Renderable Mask where
         rs''   <- cacheIfNeeded rz rs' b
         let layerA = renderLayerOf a
             layerB = renderLayerOf b
-        r      <- renderMask w mrs (runLayer layerA rs'' mempty)
-                                   (runLayer layerB rs'' mempty)
+        putStrLn $ "layerA: " ++ show layerA
+        putStrLn $ "layerB: " ++ show layerB
+        r <- renderMask w mrs (runLayer layerA rs'' mempty)
+                              (runLayer layerB rs'' mempty)
         return $ IM.insert (hash m) r rs''
-    renderLayerOf m = [(hash m, maskTfrm m)]
+    renderLayerOf m@(Mask _ a b) = (hash m, Just $ maskTfrm m) : hidden
+        where hidden = map (fmap $ const Nothing) $ concatMap renderLayerOf [a,b]
+
 
 renderMask :: Window -> MaskRenderSource -> IO () -> IO () -> IO Rendering
 renderMask = alphaMask

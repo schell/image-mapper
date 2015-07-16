@@ -200,10 +200,5 @@ renderFrame rz old a = do
 
     --putStrLn $ "All  " ++ show ss
     --putStrLn $ "Used " ++ show hs
-    --putStrLn $ "Old  " ++ show ks
+    --when (S.size ks > 0) $ putStrLn $ "Old  " ++ show ks
     foldM detach all $ S.toList ks
-
-render :: Element -> IntMap Rendering -> IO ()
-render (Element a) rs = do
-    let layer = renderLayerOf a
-    runLayer layer rs mempty

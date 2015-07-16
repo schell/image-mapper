@@ -48,6 +48,11 @@ type ModifiesRenderings r = ( Member (State AttachedRenderings) r
                             , Member (State NamedRenderings) r
                             )
 
+instance Hashable Clip
+
+data Clip = Clip { clipTopLeft     :: V2 Int
+                 , clipBottomRight :: V2 Int
+                 } deriving (Show, Eq, Typeable, Generic)
 
 data AABB = AABB { aabbCenter   :: V2 Float
                  , aabbHalfSize :: V2 Float

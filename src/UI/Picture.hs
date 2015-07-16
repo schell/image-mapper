@@ -30,12 +30,14 @@ instance Renderable Picture where
         rs' <- cacheIfNeeded rz rs pt
 
         let texLayer = renderLayerOf pt
-            f' t = runLayer texLayer rs' t >> geomf t
+            f' t = runLayer texLayer rs' t >> geomf t >> putStrLn "Rendering a pic"
             c'   = (putStrLn $ "Cleaning a picture") >> c
             r    = Rendering f' c'
 
         return $ IM.insert (hash p) r rs'
-    renderLayerOf p = renderLayerOf (pictureTex p) ++ [(hash p, picTransform p)]
+
+    renderLayerOf p =
+        renderLayerOf (pictureTex p) ++ [(hash p, Just $ picTransform p)]
 
 pictureTex :: Picture -> Texture
 pictureTex (Pic _ p _ _) = Tex p GL_TEXTURE0

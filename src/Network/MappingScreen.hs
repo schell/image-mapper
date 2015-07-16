@@ -3,6 +3,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 module Network.MappingScreen (
+    cursorMode,
     mappingScreen,
     MappingScreen(..),
     mappingScreenMode,
@@ -23,18 +24,29 @@ import Types.Internal
 import Types.Renderable
 import UI.Label
 import UI.Picture
+import UI.Pattern
 import UI.Box
 import UI.Mask
+import UI.HitArea
 import System
 import Network.System
 import Data.Hashable
 import Data.Monoid
 import Data.Typeable
 import Data.List
-
+--------------------------------------------------------------------------------
+-- The cursor signal for this screen.
+--------------------------------------------------------------------------------
+cursorMode :: Monad m => Var m InputEvent StandardCursorShape
+cursorMode = mappingScreenMode ~> var mapCursor
+    where mapCursor MappingScreenModeNavigation = StandardCursorShape'HResize
+          mapCursor MappingScreenModeHitArea = StandardCursorShape'Crosshair
+          mapCursor _ = StandardCursorShape'Arrow
+--------------------------------------------------------------------------------
+-- The mapping screen itself.
+--------------------------------------------------------------------------------
 mappingScreen :: (DoesIO r, ReadsRez r) => Vareff r InputEvent MappingScreen
-mappingScreen = MappingScreen <$> pure mempty
-                              <*> mappingBG
+mappingScreen = MappingScreen <$> mappingPattern
                               <*> mask
                               <*> info
 --------------------------------------------------------------------------------
@@ -73,8 +85,11 @@ transPos = mappingLowerLeft + (pure $ V2 0 12)
 
 transStr :: (DoesIO r, ReadsRez r) => Vareff r InputEvent String
 transStr = (++) <$> offset <*> absolute
-    where absolute,offset :: (DoesIO r, ReadsRez r) => Vareff r InputEvent String
-          absolute = ((\s -> " (" ++ s ++ ")") . stringify) <$> navigationModePicturePosition
+    where absolute,offset :: (DoesIO r, ReadsRez r)
+                          => Vareff r InputEvent String
+          absolute = str <$> navigationModePicturePosition
+          str :: V2 Float -> String
+          str = (\s -> " (" ++ s ++ ")") . stringify
           offset = stringify <$> pictureDragOffset
           stringify (V2 x y) = concat ["x: ", show x, ", y: ", show y]
 
@@ -88,14 +103,19 @@ pictureStr :: DoesIO r => Vareff r InputEvent String
 pictureStr = (("Pic: " ++) . str) <$> droppedPicture
     where str (Just p) = picPath p
           str _ = "Nothing"
-
 --------------------------------------------------------------------------------
 -- The mask that includes the current picture and hitareas
 --------------------------------------------------------------------------------
 mask :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Mask
-mask = Mask <$> pure mempty <*> (Element <$> els) <*> (Element <$> mappingBG)
+mask = Mask <$> pure mempty <*> (Element <$> els)
+            <*> (Element <$> (Box <$> (Transform <$> mappingUpperLeft <*> 1 <*> 0)
+                                  <*> mappingSize
+                                  <*> pure white))
     where els :: (DoesIO r, ReadsRez r) => Vareff r InputEvent [Element]
-          els = sequenceA [Element <$> currentPicture]
+          els = sequenceA [ Element <$> currentPicture
+                          , Element <$> hitAreas
+                          , Element <$> editingHitArea
+                          ]
 --------------------------------------------------------------------------------
 -- The picture the user is mapping
 --------------------------------------------------------------------------------
@@ -136,11 +156,41 @@ pictureScale =
 droppedPicture :: DoesIO r => Vareff r InputEvent (Maybe Picture)
 droppedPicture = startingWith Nothing <~ tagM (lift . loadPicture) fileDropped
 --------------------------------------------------------------------------------
+-- The drawn hit areas
+--------------------------------------------------------------------------------
+editingHitArea :: (ReadsRez r, DoesIO r) => Vareff r InputEvent HitArea
+editingHitArea = HitArea <$> (Transform <$> 0
+                                        <*> pictureScale <*> 0)
+                         <*> (collect <~ newPoint)
+                         <*> pure (red `alpha` 0.8)
+                         <*> pure True
+
+newPoint :: Monad m => Var m InputEvent (Event Position)
+newPoint = mouseButtonPressed MouseButton'1
+
+hitAreas :: Monad m => Var m InputEvent [HitArea]
+hitAreas = collect <~ newHitArea
+
+newHitArea :: Monad m => Var m InputEvent (Event HitArea)
+newHitArea = never
+--------------------------------------------------------------------------------
 -- The mapping area
 --------------------------------------------------------------------------------
-mappingBG :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Box
-mappingBG = Box <$> (Transform <$> mappingUpperLeft <*> 1 <*> 0)
-                <*> mappingSize <*> pure grey
+mappingPattern :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Pattern
+mappingPattern =
+    Pattern <$> (Transform <$> mappingUpperLeft <*> 1 <*> 0)
+            <*> pure (Element [box1,box2,box3,box4])
+            <*> (pure $ Clip 0 $ 2 * (floor <$> V2 sz sz))
+            <*> pure 0
+            <*> mappingSize
+    where sz = 5
+          box1 = grayBox
+          box2 = whiteBox{ boxTransform = Transform (V2 sz 0) 1 0}
+          box3 = whiteBox{ boxTransform = Transform (V2 0 sz) 1 0}
+          box4 = grayBox { boxTransform = Transform (V2 sz sz) 1 0}
+          grayBox = Box mempty (V2 sz sz) $ V4 0.7 0.7 0.7 1
+          whiteBox = Box mempty (V2 sz sz) $ V4 1 1 1 1
+
 
 mappingSize :: (DoesIO r, ReadsRez r) => Vareff r InputEvent Size
 mappingSize = mappingLowerRight - mappingUpperLeft
@@ -191,24 +241,23 @@ triggerProducts = var (== CharEvent 'p') ~> onTrue
 -- Types
 --------------------------------------------------------------------------------
 instance Renderable MappingScreen where
-    cache rz rs (MappingScreen _ bg p i) = foldM (cacheIfNeeded rz) rs
+    cache rz rs (MappingScreen bg p i) = foldM (cacheIfNeeded rz) rs
                                                  [ Element bg
                                                  , Element p
                                                  , Element i
                                                  ]
     nameOf _ = "MappingScreen"
-    renderLayerOf (MappingScreen t bg p i) = map ((t <>) <$>) layer
+    renderLayerOf (MappingScreen bg p i) = layer
         where layer = concatMap renderLayerOf [ Element bg
                                               , Element p
                                               , Element i
                                               ]
 
 instance Hashable MappingScreen where
-    hashWithSalt s (MappingScreen _ bg p inf) =
+    hashWithSalt s (MappingScreen bg p inf) =
         s `hashWithSalt` bg `hashWithSalt` p `hashWithSalt` inf
 
-data MappingScreen = MappingScreen { mappingScreenTfrm     :: Transform
-                                   , mappingScreenBG       :: Box
+data MappingScreen = MappingScreen { mappingScreenPattern  :: Pattern
                                    , mappingScreenPic      :: Mask
                                    , mappingScreenInfo     :: [Label]
                                    } deriving (Show, Eq, Typeable)

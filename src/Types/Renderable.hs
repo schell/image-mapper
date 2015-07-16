@@ -1,20 +1,33 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 module Types.Renderable where
 
 import Types.Internal
 import Gelatin.Core.Rendering
+import Graphics.UI.GLFW
 import Control.Monad
 import Data.Hashable
 import Data.IntMap (IntMap)
 import Data.List (intercalate)
+import Data.Maybe
 import Data.Monoid
 import qualified Data.IntMap as IM
 import GHC.Stack
 --------------------------------------------------------------------------------
 -- Other Renderables
 --------------------------------------------------------------------------------
+instance Renderable StandardCursorShape where
+    cache (Rez{rezWindow = w}) rs c = do
+        cursor <- createStandardCursor c
+        let r = Rendering (const $ setCursor w cursor) (destroyCursor cursor)
+        return $ IM.insert (hash c) r rs
+    renderLayerOf c = [(hash c, Just mempty)]
+    nameOf _ = "Cursor"
+
+instance Hashable StandardCursorShape
+
 instance (Renderable a, Hashable a, Show a) => Renderable (Maybe a) where
     cache rz rs (Just a) = cacheIfNeeded rz rs a
     cache _ rs _         = return rs
@@ -24,7 +37,7 @@ instance (Renderable a, Hashable a, Show a) => Renderable (Maybe a) where
     renderLayerOf _ = []
 
 instance (Renderable a, Hashable a) => Renderable [a] where
-    cache rz rs as = foldM (cacheIfNeeded rz) rs as
+    cache = foldM . cacheIfNeeded
     nameOf as = "[ " ++ (intercalate ", " $ map nameOf as) ++ " ]"
     renderLayerOf = concatMap renderLayerOf
 
@@ -35,14 +48,20 @@ instance Renderable () where
 --------------------------------------------------------------------------------
 -- Cacheing helpers
 --------------------------------------------------------------------------------
-runLayer :: [(Int, Transform)] -> IntMap Rendering -> Transform -> IO ()
+runLayer :: Layer -> IntMap Rendering -> Transform -> IO ()
 runLayer ts rs t = mapM_ (uncurry go) ts
-    where go k t' = maybe (err k) (rend t') $ IM.lookup k rs
+    where go k (Just t') = maybe (err k) (rend t') $ IM.lookup k rs
+          go _ _ = return ()
           rend t' (Rendering f _) = f $ t <> t'
           err k = errorWithStackTrace $ unwords [ "Fatal error! Could not find"
                                                 , "rendering (from a layer)"
                                                 , show k
                                                 ]
+
+runLayerHidden :: Layer -> IntMap Rendering -> Transform -> IO ()
+runLayerHidden ts = runLayer (catMaybes $ map f ts)
+    where f (i, Nothing) = Just (i, Just mempty)
+          f _ = Nothing
 
 runErr :: (Renderable a, Hashable a, Show a) => a -> IO ()
 runErr a = do
@@ -86,6 +105,8 @@ data Element where
 -- Renderable
 --------------------------------------------------------------------------------
 class Renderable a where
-    nameOf        :: a -> String
     cache         :: Rez -> IntMap Rendering -> a -> IO (IntMap Rendering)
-    renderLayerOf :: a -> [(Int,Transform)]
+    nameOf        :: a   -> String
+    renderLayerOf :: a   -> Layer
+
+type Layer = [(Int, Maybe Transform)]

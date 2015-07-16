@@ -31,7 +31,7 @@ instance Renderable Label where
                     r  = Rendering f (c' >> c)
                 return $ IM.insert (hash l) r rs
     renderLayerOf (Label _ _ Nothing _ _) = []
-    renderLayerOf l = [(hash l, labelTransform l)]
+    renderLayerOf l = [(hash l, Just $ labelTransform l)]
 
 instance Hashable PointSize
 

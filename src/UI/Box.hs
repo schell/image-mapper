@@ -20,7 +20,7 @@ instance Renderable Box where
         r <- colorRendering win geom GL_TRIANGLES vs cs
         putStrLn $ "Cacheing Box " ++ (show $ hash b)
         return $ IM.insert (hash b) r rs
-    renderLayerOf b = [(hash b, boxTransform b)]
+    renderLayerOf b = [(hash b, Just $ boxTransform b)]
 
 instance Hashable Box where
     hashWithSalt s (Box _ sz c) = s `hashWithSalt` sz `hashWithSalt` c

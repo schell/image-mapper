@@ -15,6 +15,7 @@ import Linear
 import Network.System
 import Gelatin.Core.Rendering
 import Gelatin.Core.Color
+import Graphics.UI.GLFW
 import Graphics.Text.TrueType
 import Control.Monad
 import Control.Varying
@@ -23,29 +24,29 @@ import Control.Eff.State.Strict
 import Data.Hashable
 import Data.Typeable
 import qualified Data.IntMap as IM
-import Data.List
+--import Data.List
 
 network :: (DoesIO r, ReadsRez r, Member (State AttachedRenderings) r)
         => Vareff r InputEvent Element
 network = Element <$>
-    (Network <$> (mappingScreen ~> var tfrm)
-             <*> breadCrumb
-             <*> debugInfo)
-    where tfrm m = m{ mappingScreenTfrm = Transform (V2 0 16) 1 0 }
+    (Network <$> mappingScreen
+             -- <*> breadCrumb
+             <*> debugInfo
+             <*> cursorMode)
 
-breadCrumb :: (ReadsRez r, DoesIO r) => Vareff r InputEvent Label
-breadCrumb = Label <$> (pure $ Transform (V2 10 26) 1 0)
-                   <*> (intercalate " > " <$> strs)
-                   <*> systemPathForFont "Arial" True False
-                   <*> (pure $ PointSize 14)
-                   <*> pure white
-    where strs = (:) <$> (show <$> networkMode) <*> subModeStrings
+--breadCrumb :: (ReadsRez r, DoesIO r) => Vareff r InputEvent Label
+--breadCrumb = Label <$> (pure $ Transform (V2 10 26) 1 0)
+--                   <*> (intercalate " > " <$> strs)
+--                   <*> systemPathForFont "Arial" True False
+--                   <*> (pure $ PointSize 14)
+--                   <*> pure white
+--    where strs = (:) <$> (show <$> networkMode) <*> subModeStrings
 
-networkMode :: Monad m => Var m a NetworkMode
-networkMode = pure NetworkModeMappingScreen
+--networkMode :: Monad m => Var m a NetworkMode
+--networkMode = pure NetworkModeMappingScreen
 
-subModeStrings :: Monad m => Var m InputEvent [String]
-subModeStrings = sequenceA [show <$> mappingScreenMode]
+--subModeStrings :: Monad m => Var m InputEvent [String]
+--subModeStrings = sequenceA [show <$> mappingScreenMode]
 
 debugInfo :: (Member (State AttachedRenderings) r, DoesIO r, ReadsRez r)
           => Vareff r InputEvent Label
@@ -101,17 +102,20 @@ numRenderings = varM $ \_ -> do
 --
 --          lbl :: Monad m => Var m a Label
 --          lbl = Label <$> pure mempty <*> pure "Save" <*> pure "Arial" <*> (pure $ PointSize 32) <*> 1
-
-
+--------------------------------------------------------------------------------
+-- Network data
+--------------------------------------------------------------------------------
 instance Renderable Network where
-    cache rz rs (Network m bc i) = foldM (cacheIfNeeded rz) rs [ Element m
-                                                                 , Element bc
-                                                                 , Element i
-                                                                 ]
-    renderLayerOf (Network m bc i) = concat [renderLayerOf m
-                                            ,renderLayerOf bc
-                                            ,renderLayerOf i
-                                            ]
+    cache rz rs (Network m {-bc-} i c) = foldM (cacheIfNeeded rz) rs [ Element m
+                                                                     --, Element bc
+                                                                     , Element i
+                                                                     , Element c
+                                                                     ]
+    renderLayerOf (Network m {-bc-} i c) = concat [renderLayerOf m
+                                                  --,renderLayerOf bc
+                                                  ,renderLayerOf i
+                                                  ,renderLayerOf c
+                                                  ]
     nameOf _ = "Network"
 
 
@@ -120,16 +124,16 @@ instance Renderable Network where
 --              }
 
 instance Hashable Network where
-   hashWithSalt s (Network m bc l) =
-       s `hashWithSalt` bc `hashWithSalt` m `hashWithSalt` l
+   hashWithSalt s (Network {-bc-} m l c) =
+       s `hashWithSalt` {-bc `hashWithSalt`-} m `hashWithSalt` c `hashWithSalt` l
 
 data Network = Network { networkMappingScreen :: MappingScreen
-                       , networkBreadCrumb    :: Label
+                       --, networkBreadCrumb    :: Label
                        , networkInfo          :: Label
+                       , networkCursorMode    :: StandardCursorShape
                        } deriving (Show, Eq, Typeable)
 
-instance Show NetworkMode where
-    show NetworkModeMappingScreen = "Mapping Screen"
+--instance Show NetworkMode where
+--    show NetworkModeMappingScreen = "Mapping Screen"
 
-data NetworkMode = NetworkModeMappingScreen
-
+--data NetworkMode = NetworkModeMappingScreen
