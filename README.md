@@ -1,7 +1,7 @@
-syndeca-mapper
+image-mapper
 ==============
-The Syndeca Mapper is an experimental tool for mapping Syndeca product data to
-images. It is written in Haskell with OpenGL.
+The Image Mapper is an experimental tool for outlining images.
+It is written in Haskell with OpenGL.
 
 future
 ------
